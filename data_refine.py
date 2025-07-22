@@ -16,62 +16,55 @@ def to_excel_formatted(df, format_type=None):
     output = io.BytesIO()
     df.to_excel(output, index=False, sheet_name='Sheet1')
     
-    # openpyxl을 사용하여 워크북 로드 및 서식 적용
     workbook = openpyxl.load_workbook(output)
     sheet = workbook.active
 
-    # 1. (공통) 셀 너비 자동 조절
+    # 1. 셀 너비 자동 조절
     for column_cells in sheet.columns:
-        length = max(len(str(cell.value)) for cell in column_cells)
-        # 한글 등을 고려하여 너비에 여유를 줌
+        # 헤더 길이를 기본으로 설정
+        length = len(str(column_cells[0].value))
+        # 데이터 내용 중 가장 긴 길이를 찾아 업데이트
+        for cell in column_cells:
+            if cell.value:
+                # 줄바꿈 문자가 있는 경우 가장 긴 줄을 기준으로 계산
+                cell_length = max(len(line) for line in str(cell.value).split('\n'))
+                if cell_length > length:
+                    length = cell_length
+        # 여유를 주어 너비 설정
         sheet.column_dimensions[get_column_letter(column_cells[0].column)].width = (length + 2) * 1.2
 
-    # 2. (특정 포맷) 포장 리스트 고급 서식 적용
+    # 2. 포장 리스트 고급 서식 적용
     if format_type == 'packing_list':
-        # 서식 스타일 정의
-        thin_border = Border(
-            left=Side(style='thin'), 
-            right=Side(style='thin'), 
-            top=Side(style='thin'), 
-            bottom=Side(style='thin')
-        )
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
         odd_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid") # 연한 회색
-        even_fill = PatternFill(fill_type=None) # 흰색
+        
+        # 전체 셀에 기본 테두리 적용
+        for row in sheet.iter_rows():
+            for cell in row:
+                cell.border = thin_border
         
         bundle_start_row = 2
-        
         for row_num in range(2, sheet.max_row + 2):
-            # 현재 행의 묶음번호
             current_bundle_cell = sheet.cell(row=row_num, column=1)
             
-            # 묶음번호가 있거나, 마지막 행에 도달하면 이전 그룹에 서식 적용
             if current_bundle_cell.value or row_num == sheet.max_row + 1:
                 if row_num > 2:
                     bundle_end_row = row_num - 1
+                    prev_bundle_num_str = str(sheet.cell(row=bundle_start_row, column=1).value)
+
+                    if prev_bundle_num_str.isdigit():
+                        prev_bundle_num = int(prev_bundle_num_str)
+                        if prev_bundle_num % 2 != 0: # 홀수 묶음번호에만 배경색 적용
+                            for r in range(bundle_start_row, bundle_end_row + 1):
+                                for c in range(1, sheet.max_column + 1):
+                                    sheet.cell(row=r, column=c).fill = odd_fill
                     
-                    # 이전 그룹의 묶음번호
-                    prev_bundle_num = int(sheet.cell(row=bundle_start_row, column=1).value)
-                    
-                    # 배경색 적용
-                    fill = odd_fill if prev_bundle_num % 2 != 0 else even_fill
-                    for r in range(bundle_start_row, bundle_end_row + 1):
-                        for c in range(1, sheet.max_column + 1):
-                            sheet.cell(row=r, column=c).fill = fill
-                            
-                    # 셀 병합
                     if bundle_start_row != bundle_end_row:
                         sheet.merge_cells(start_row=bundle_start_row, start_column=1, end_row=bundle_end_row, end_column=1)
-                        # 병합된 셀 수직 중앙 정렬
-                        sheet.cell(row=bundle_start_row, column=1).alignment = Alignment(vertical='center')
-                    
-                    # 테두리 적용 (이 로직은 그룹 단위로 테두리를 그리는 것보다 전체 셀에 적용하는게 더 간단하고 보기 좋음)
-                    for r in range(bundle_start_row, bundle_end_row + 1):
-                         for c in range(1, sheet.max_column + 1):
-                            sheet.cell(row=r, column=c).border = thin_border
+                        sheet.cell(row=bundle_start_row, column=1).alignment = Alignment(vertical='center', horizontal='center')
                 
                 bundle_start_row = row_num
-
-    # 최종 서식이 적용된 워크북을 바이트로 저장
+    
     final_output = io.BytesIO()
     workbook.save(final_output)
     final_output.seek(0)
@@ -82,27 +75,25 @@ def to_excel_formatted(df, format_type=None):
 def process_files(file1, file2, file3):
     """세 개의 파일을 받아 세 종류의 결과물(최종본, 출고수량, 포장리스트)을 생성하는 함수"""
     try:
-        # 기존 로직 (데이터 처리)
+        # 데이터 처리 로직 (이전과 동일)
         df_smartstore = pd.read_excel(file1)
         df_ecount = pd.read_excel(file2)
         df_godomall = pd.read_excel(file3)
 
         df_final = df_ecount.copy().rename(columns={'금액': '실결제금액'})
+        df_final['original_order'] = range(len(df_final)) # 원본 순서 저장을 위한 인덱스 생성
 
         key_cols_smartstore = ['재고관리코드', '주문수량', '수령자명']
-        smartstore_prices = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})[key_cols_smartstore + ['수정될_금액_스토어']]
-        smartstore_prices = smartstore_prices.drop_duplicates(subset=key_cols_smartstore, keep='first')
+        smartstore_prices = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})[key_cols_smartstore + ['수정될_금액_스토어']].drop_duplicates(subset=key_cols_smartstore, keep='first')
         
         godomall_prices = df_godomall.copy()
         last_col_name = godomall_prices.columns[-1]
         godomall_prices['수정될_금액_고도몰'] = pd.to_numeric(godomall_prices[last_col_name].astype(str).str.replace(',', ''), errors='coerce')
         key_cols_godomall_orig = ['수취인 이름', '상품수량', '상품별 품목금액']
-        godomall_prices_for_merge = godomall_prices[key_cols_godomall_orig + ['수정될_금액_고도몰']].rename(columns={'수취인 이름': '수령자명', '상품수량': '주문수량', '상품별 품목금액': '실결제금액'})
-        key_cols_godomall_merge = ['수령자명', '주문수량', '실결제금액']
-        godomall_prices_for_merge = godomall_prices_for_merge.drop_duplicates(subset=key_cols_godomall_merge, keep='first')
+        godomall_prices_for_merge = godomall_prices[key_cols_godomall_orig + ['수정될_금액_고도몰']].rename(columns={'수취인 이름': '수령자명', '상품수량': '주문수량', '상품별 품목금액': '실결제금액'}).drop_duplicates(subset=['수령자명', '주문수량', '실결제금액'], keep='first')
         
         df_final = pd.merge(df_final, smartstore_prices, on=key_cols_smartstore, how='left')
-        df_final = pd.merge(df_final, godomall_prices_for_merge, on=key_cols_godomall_merge, how='left')
+        df_final = pd.merge(df_final, godomall_prices_for_merge, on=['수령자명', '주문수량', '실결제금액'], how='left')
 
         warnings = [f"- [스마트스토어] 수령자명: **{row['수령자명']}**, 상품명: {row['SKU상품명']}" for _, row in df_final[(df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna())].iterrows()]
         warnings.extend([f"- [고도몰5] 수령자명: **{row['수령자명']}**, 상품명: {row['SKU상품명']}" for _, row in df_final[(df_final['쇼핑몰'] == '고도몰5') & (df_final['수정될_금액_고도몰'].isna())].iterrows()])
@@ -110,12 +101,15 @@ def process_files(file1, file2, file3):
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '고도몰5', df_final['수정될_금액_고도몰'].fillna(df_final['실결제금액']), df_final['실결제금액'])
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '스마트스토어', df_final['수정될_금액_스토어'].fillna(df_final['실결제금액']), df_final['실결제금액'])
         
-        df_main_result = df_final[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명']]
-
-        # 물류팀용 파일 생성 로직
+        df_main_result = df_final.sort_values('original_order').drop(columns=['original_order'])[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명']]
+        
+        # --- 물류팀용 파일 생성 로직 ---
         df_quantity_summary = df_main_result.groupby('SKU상품명', as_index=False)['주문수량'].sum().rename(columns={'주문수량': '개수'})
         
-        df_packing_list = df_main_result[['SKU상품명', '주문수량', '수령자명', '쇼핑몰']].copy().sort_values(by='수령자명', kind='mergesort', ignore_index=True)
+        # <<-- 수정된 부분: 인위적인 정렬(sort_values) 제거 -->>
+        # 원본 데이터(df_main_result)의 순서를 그대로 사용하여 포장 리스트 생성
+        df_packing_list = df_main_result[['SKU상품명', '주문수량', '수령자명', '쇼핑몰']].copy()
+        
         is_first_item = df_packing_list['수령자명'] != df_packing_list['수령자명'].shift(1)
         df_packing_list['묶음번호'] = is_first_item.cumsum()
         df_packing_list_final = df_packing_list.copy()
@@ -129,10 +123,10 @@ def process_files(file1, file2, file3):
 
 
 # --------------------------------------------------------------------------
-# Streamlit 앱 UI 구성
+# Streamlit 앱 UI 구성 (이전과 동일)
 # --------------------------------------------------------------------------
 st.set_page_config(page_title="주문 데이터 처리 자동화", layout="wide")
-st.title("📑 주문 데이터 처리 및 파일 생성 자동화 (v.Final)")
+st.title("📑 주문 데이터 처리 및 파일 생성 자동화 (v.Final-2)")
 st.write("---")
 
 st.header("1. 원본 엑셀 파일 3개 업로드")
@@ -151,8 +145,6 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
         
         if success:
             st.success(message)
-            
-            # 현재 시간으로 파일명 접미사 생성
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
             if warnings:
