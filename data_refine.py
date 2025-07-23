@@ -14,10 +14,8 @@ from datetime import datetime
 def to_excel_formatted(df, format_type=None):
     """데이터프레임을 서식이 적용된 엑셀 파일 형식의 BytesIO 객체로 변환하는 함수"""
     output = io.BytesIO()
-    # NaN 값을 빈 문자열로 바꿔서 저장
     df_to_save = df.fillna('')
     
-    # 이카운트 파일의 경우, 특정 열 이름을 양식에 맞게 변경
     if format_type == 'ecount_upload':
         df_to_save = df_to_save.rename(columns={'적요_전표': '적요', '적요_품목': '적요.1'})
 
@@ -26,23 +24,19 @@ def to_excel_formatted(df, format_type=None):
     workbook = openpyxl.load_workbook(output)
     sheet = workbook.active
 
-    # 1. 셀 너비 자동 조절
     for column_cells in sheet.columns:
         max_length = 0
-        column = column_cells[0].column_letter # A, B, C ...
+        column = column_cells[0].column_letter
         for cell in column_cells:
             try:
                 if cell.value:
-                    # 현재 셀의 길이가 기존 최대 길이보다 길면 업데이트
                     if len(str(cell.value)) > max_length:
                         max_length = len(str(cell.value))
             except:
                 pass
-        # 계산된 최대 길이에 약간의 여유를 주어 너비 설정
         adjusted_width = (max_length + 2) * 1.2
         sheet.column_dimensions[column].width = adjusted_width
 
-    # 2. 포장 리스트 고급 서식 적용
     if format_type == 'packing_list':
         thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
         odd_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
@@ -84,7 +78,6 @@ def to_excel_formatted(df, format_type=None):
 def process_all_files(file1, file2, file3):
     """3개의 파일을 받아 4종류의 최종 결과물을 생성하는 메인 함수"""
     try:
-        # 상품 마스터 정보를 코드 내에 데이터로 직접 내장
         master_data_string = """SKU코드,SKU상품명,과세여부,입수량
 G604E,[BOX] 가쓰오 슈토우 1kg,과세,6
 S011E,[BOX] 고래미 가라아게파우더2kg,과세,
@@ -442,7 +435,7 @@ G641E,혼마수산 연어알 500g,과세,
 """
         df_master = pd.read_csv(io.StringIO(master_data_string))
         
-        # <<-- 핵심 수정: 상품 마스터 데이터 사용 전, SKU코드를 기준으로 중복 제거 -->>
+        # <<-- 핵심 수정 1: 상품 마스터 데이터 사용 전, SKU코드를 기준으로 중복 제거 -->>
         df_master = df_master.drop_duplicates(subset=['SKU코드'], keep='first')
 
         # 1. 사용자 업로드 파일 읽기
@@ -474,7 +467,7 @@ G641E,혼마수산 연어알 500g,과세,
         df_main_result = df_final[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명']]
         
         # 3. 물류팀용 파일 2종 생성
-        df_quantity_summary = df_main_result.groupby('SKU상품명', as_index=False)['주문수량'].sum().rename(columns={'개수': '개수'})
+        df_quantity_summary = df_main_result.groupby('SKU상품명', as_index=False)['주문수량'].sum().rename(columns={'주문수량': '개수'})
         df_packing_list = df_main_result[['SKU상품명', '주문수량', '수령자명', '쇼핑몰']].copy()
         is_first_item = df_packing_list['수령자명'] != df_packing_list['수령자명'].shift(1)
         df_packing_list['묶음번호'] = is_first_item.cumsum()
@@ -500,11 +493,12 @@ G641E,혼마수산 연어알 500g,과세,
         df_ecount_upload['적요_전표'] = '오전/온라인'
         df_ecount_upload['품목코드'] = df_merged['재고관리코드']
         
-        is_box = df_merged['SKU상품명'].str.contains('BOX', na=False)
-        df_ecount_upload['박스'] = np.where(is_box, df_merged['주문수량'], "")
-        
+        # <<-- 핵심 수정 2: '수량' 계산 로직 수정 -->>
         입수량 = pd.to_numeric(df_merged['입수량'], errors='coerce').fillna(1)
-        df_ecount_upload['수량'] = np.where(is_box, df_merged['주문수량'] * 입수량, df_merged['주문수량']).astype(int)
+        is_box = 입수량 > 1
+        
+        df_ecount_upload['박스'] = np.where(is_box, df_merged['주문수량'], np.nan) # BOX 아닐 경우 NaN으로 두어 엑셀에서 빈칸으로 표시
+        df_ecount_upload['수량'] = (df_merged['주문수량'] * 입수량).astype(int)
         
         df_merged['실결제금액'] = pd.to_numeric(df_merged['실결제금액'], errors='coerce').fillna(0)
         공급가액 = np.where(df_merged['과세여부'] == '과세', df_merged['실결제금액'] / 1.1, df_merged['실결제금액'])
@@ -526,6 +520,11 @@ G641E,혼마수산 연어알 500g,과세,
         for col in ['공급가액', '부가세']:
             df_ecount_upload[col] = df_ecount_upload[col].round().astype('Int64')
         
+        # <<-- 핵심 수정 3: '정렬 순서' 학습 및 적용 -->>
+        sort_order = ['고래미자사몰_현금영수증(고도몰)', '스토어팜', '쿠팡 주식회사']
+        df_ecount_upload['거래처명'] = pd.Categorical(df_ecount_upload['거래처명'], categories=sort_order, ordered=True)
+        df_ecount_upload = df_ecount_upload.sort_values(by='거래처명').reset_index(drop=True)
+        
         df_ecount_upload = df_ecount_upload[ecount_columns]
 
         return df_main_result, df_quantity_summary, df_packing_list_final, df_ecount_upload, True, "모든 파일 처리가 성공적으로 완료되었습니다.", warnings
@@ -540,7 +539,7 @@ G641E,혼마수산 연어알 500g,과세,
 # --------------------------------------------------------------------------
 # Streamlit 앱 UI 구성
 # --------------------------------------------------------------------------
-st.set_page_config(page_title="주문 처리 자동화 v.Final-Edition (Fix)", layout="wide")
+st.set_page_config(page_title="주문 처리 자동화 v.Final-Edition", layout="wide")
 st.title("📑 주문 처리 자동화 (v.Final-Edition)")
 st.info("💡 3개의 주문 관련 파일을 업로드하면, 금액 보정, 물류, ERP(이카운트)용 데이터가 한 번에 생성됩니다.")
 st.write("---")
