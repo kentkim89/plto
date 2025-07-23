@@ -33,7 +33,7 @@ def to_excel_formatted(df, format_type=None):
     # --- 파일별 특수 서식 ---
     for column_cells in sheet.columns:
         max_length = 0
-        column = column_cells[0].column_letter
+        column = column_cells.column_letter
         for cell in column_cells:
             try:
                 if cell.value:
@@ -110,12 +110,10 @@ def process_all_files(file1, file2, file3, df_master):
         key_cols_smartstore = ['재고관리코드', '주문수량', '수령자명']
         smartstore_prices = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})[key_cols_smartstore + ['수정될_금액_스토어']].drop_duplicates(subset=key_cols_smartstore, keep='first')
         
-        # <<-- 최종 수정: 고도몰 금액 보정을 위한 연결고리(Key) 변경 -->>
         key_cols_godomall = ['수취인 이름', '상품수량', '상품별 품목금액']
         godomall_prices_for_merge = df_godomall[key_cols_godomall + ['수정될_금액_고도몰']].rename(columns={'수취인 이름': '수령자명', '상품수량': '주문수량', '상품별 품목금액': '실결제금액'})
         godomall_prices_for_merge = godomall_prices_for_merge.drop_duplicates(subset=['수령자명', '주문수량', '실결제금액'], keep='first')
         
-        # 데이터 병합 전, 키로 사용될 열들의 데이터 타입을 통일 (공백 제거 포함)
         df_final['수령자명'] = df_final['수령자명'].astype(str).str.strip()
         df_final['주문수량'] = pd.to_numeric(df_final['주문수량'], errors='coerce').fillna(0).astype(int)
         df_final['실결제금액'] = pd.to_numeric(df_final['실결제금액'], errors='coerce').fillna(0).astype(int)
@@ -276,4 +274,4 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
             st.error(f"🚨 상품 마스터 파일을 읽는 중 예상치 못한 오류가 발생했습니다: {e}")
 
     else:
-        st.warning("⚠️ 3개의 엑셀 파일을 모두 업로드해야 실행할 수 있습니다.")```
+        st.warning("⚠️ 3개의 엑셀 파일을 모두 업로드해야 실행할 수 있습니다.")
