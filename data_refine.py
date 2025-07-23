@@ -24,6 +24,13 @@ def to_excel_formatted(df, format_type=None):
     workbook = openpyxl.load_workbook(output)
     sheet = workbook.active
 
+    # --- 공통 서식: 모든 셀 가운데 정렬 ---
+    center_alignment = Alignment(horizontal='center', vertical='center')
+    for row in sheet.iter_rows():
+        for cell in row:
+            cell.alignment = center_alignment
+
+    # --- 파일별 특수 서식 ---
     for column_cells in sheet.columns:
         max_length = 0
         column = column_cells[0].column_letter
@@ -37,22 +44,21 @@ def to_excel_formatted(df, format_type=None):
         adjusted_width = (max_length + 2) * 1.2
         sheet.column_dimensions[column].width = adjusted_width
     
-    # --- 서식 스타일 정의 ---
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
     pink_fill = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid") # 연한 핑크
 
-    # --- 포장 리스트 고급 서식 ---
     if format_type == 'packing_list':
         for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=1, max_col=sheet.max_column):
             for cell in row:
                 cell.border = thin_border
         
         bundle_start_row = 2
-        # 루프를 마지막 행 + 1까지 실행하여 마지막 그룹 처리를 보장
         for row_num in range(2, sheet.max_row + 2):
-            current_bundle_cell = sheet.cell(row=row_num, column=1)
+            # 마지막 그룹 처리를 위해 루프를 한 번 더 실행
+            current_bundle_cell = sheet.cell(row=row_num, column=1) if row_num <= sheet.max_row else None
             
-            if (current_bundle_cell.value) or (row_num > sheet.max_row):
+            # 새 묶음이 시작되거나, 마지막 행을 지난 경우 이전 그룹에 서식 적용
+            if (current_bundle_cell and current_bundle_cell.value) or (row_num > sheet.max_row):
                 if row_num > 2:
                     bundle_end_row = row_num - 1
                     prev_bundle_num_str = str(sheet.cell(row=bundle_start_row, column=1).value)
@@ -68,22 +74,17 @@ def to_excel_formatted(df, format_type=None):
                         # 묶음번호 및 수령자명 병합
                         sheet.merge_cells(start_row=bundle_start_row, start_column=1, end_row=bundle_end_row, end_column=1)
                         sheet.merge_cells(start_row=bundle_start_row, start_column=4, end_row=bundle_end_row, end_column=4)
-                        # 병합된 셀 중앙 정렬
-                        sheet.cell(row=bundle_start_row, column=1).alignment = Alignment(vertical='center', horizontal='center')
-                        sheet.cell(row=bundle_start_row, column=4).alignment = Alignment(vertical='center', horizontal='center')
                 
                 bundle_start_row = row_num
-    
-    # --- 출고 수량 파일 서식 ---
+
     if format_type == 'quantity_summary':
         for row_idx, row in enumerate(sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=1, max_col=sheet.max_column)):
             for cell in row:
                 cell.border = thin_border
-            # 헤더를 제외한 데이터 행에만 배경색 적용
             if row_idx > 0 and row_idx % 2 != 0:
                 for cell in row:
                     cell.fill = pink_fill
-
+    
     final_output = io.BytesIO()
     workbook.save(final_output)
     final_output.seek(0)
@@ -92,13 +93,11 @@ def to_excel_formatted(df, format_type=None):
 
 @st.cache_data
 def load_local_master_data(file_path="master_data.csv"):
-    """로컬 경로에서 상품 마스터 데이터를 로드하고 전처리하는 함수"""
     df_master = pd.read_csv(file_path)
     df_master = df_master.drop_duplicates(subset=['SKU코드'], keep='first')
     return df_master
 
 def process_all_files(file1, file2, file3, df_master):
-    """3개의 파일을 받아 4종류의 최종 결과물을 생성하는 메인 함수"""
     try:
         df_smartstore = pd.read_excel(file1)
         df_ecount_orig = pd.read_excel(file2)
@@ -127,12 +126,10 @@ def process_all_files(file1, file2, file3, df_master):
         
         df_main_result = df_final[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명', 'original_order']]
         
-        # 동명이인 가능성 확인 로직
         homonym_warnings = []
-        unique_names = df_main_result['수령자명'].unique()
-        for name in unique_names:
-            indices = df_main_result[df_main_result['수령자명'] == name].index
-            if len(indices) > 1 and (indices.max() - indices.min() + 1) != len(indices):
+        name_groups = df_main_result.groupby('수령자명')['original_order'].apply(list)
+        for name, orders in name_groups.items():
+            if len(orders) > 1 and (max(orders) - min(orders) + 1) != len(orders):
                 homonym_warnings.append(f"- [동명이인 의심] **{name}** 님의 주문이 떨어져서 입력되었습니다. 확인이 필요합니다.")
         warnings.extend(homonym_warnings)
 
@@ -163,11 +160,9 @@ def process_all_files(file1, file2, file3, df_master):
         
         is_box_order = df_merged['SKU상품명'].str.contains("BOX", na=False)
         입수량 = pd.to_numeric(df_merged['입수량'], errors='coerce').fillna(1)
-        
         base_quantity = np.where(is_box_order, df_merged['주문수량'] * 입수량, df_merged['주문수량'])
         is_3_pack = df_merged['SKU상품명'].str.contains("3개입|3개", na=False)
         final_quantity = np.where(is_3_pack, base_quantity * 3, base_quantity)
-        
         df_ecount_upload['박스'] = np.where(is_box_order, df_merged['주문수량'], np.nan)
         df_ecount_upload['수량'] = final_quantity.astype(int)
         
@@ -206,12 +201,11 @@ def process_all_files(file1, file2, file3, df_master):
         st.error(traceback.format_exc())
         return None, None, None, None, False, f"오류가 발생했습니다. 파일을 다시 확인하거나 관리자에게 문의하세요.", []
 
-
 # --------------------------------------------------------------------------
 # Streamlit 앱 UI 구성
 # --------------------------------------------------------------------------
-st.set_page_config(page_title="주문 처리 자동화 v.Final-Masterpiece", layout="wide")
-st.title("📑 주문 처리 자동화 (v.Final-Masterpiece)")
+st.set_page_config(page_title="주문 처리 자동화 v.Production-Ready", layout="wide")
+st.title("📑 주문 처리 자동화 (v.Production-Ready)")
 st.info("💡 3개의 주문 관련 파일을 업로드하면, 금액 보정, 물류, ERP(이카운트)용 데이터가 한 번에 생성됩니다.")
 st.write("---")
 
