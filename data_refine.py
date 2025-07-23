@@ -106,7 +106,6 @@ def process_all_files(file1, file2, file3, df_master):
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
         
         # <<-- 최종 수정: 고도몰 실결제금액 처리 로직 전면 수정 -->>
-        # 마지막 열이 없으므로 직접 계산
         cols_to_numeric = ['상품별 품목금액', '총 배송 금액', '회 할인 금액', '쿠폰 할인 금액', '사용된 마일리지']
         for col in cols_to_numeric:
             df_godomall[col] = pd.to_numeric(df_godomall[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
@@ -115,7 +114,7 @@ def process_all_files(file1, file2, file3, df_master):
             df_godomall['상품별 품목금액'] + df_godomall['총 배송 금액'] - df_godomall['회 할인 금액'] - 
             df_godomall['쿠폰 할인 금액'] - df_godomall['사용된 마일리지']
         )
-
+        
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
         
         key_cols_smartstore = ['재고관리코드', '주문수량', '수령자명']
@@ -129,12 +128,12 @@ def process_all_files(file1, file2, file3, df_master):
         df_final['수령자명'] = df_final['수령자명'].str.strip()
         df_final['주문수량'] = pd.to_numeric(df_final['주문수량'], errors='coerce').fillna(0).astype(int)
         
-        key_cols_godomall = ['수취인 이름', '상품수량', '상품명']
-        godomall_prices_for_merge = df_godomall[key_cols_godomall + ['수정될_금액_고도몰']].rename(columns={'수취인 이름': '수령자명', '상품수량': '주문수량', '상품명': 'SKU상품명'})
-        godomall_prices_for_merge = godomall_prices_for_merge.drop_duplicates(subset=['수령자명', '주문수량', 'SKU상품명'], keep='first')
+        key_cols_godomall = ['수취인 이름', '상품수량']
+        godomall_prices_for_merge = df_godomall[key_cols_godomall + ['수정될_금액_고도몰']].rename(columns={'수취인 이름': '수령자명', '상품수량': '주문수량'})
+        godomall_prices_for_merge = godomall_prices_for_merge.drop_duplicates(subset=['수령자명', '주문수량'], keep='first')
 
         df_final = pd.merge(df_final, smartstore_prices, on=key_cols_smartstore, how='left')
-        df_final = pd.merge(df_final, godomall_prices_for_merge, on=['수령자명', '주문수량', 'SKU상품명'], how='left')
+        df_final = pd.merge(df_final, godomall_prices_for_merge, on=['수령자명', '주문수량'], how='left')
 
         warnings = [f"- [금액보정 실패] **{row['쇼핑몰']}** / {row['수령자명']} / {row['SKU상품명']}" for _, row in df_final[(df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna()) | (df_final['쇼핑몰'] == '고도몰5') & (df_final['수정될_금액_고도몰'].isna())].iterrows()]
         
@@ -191,11 +190,14 @@ def process_all_files(file1, file2, file3, df_master):
         df_ecount_upload['쇼핑몰고객명'] = df_merged['수령자명']
         df_ecount_upload['original_order'] = df_merged['original_order']
         
+        # <<-- 최종 수정: '실결제금액'을 기준으로 정렬하기 위한 열 추가 -->>
+        df_ecount_upload['실결제금액_sort'] = df_merged['실결제금액']
+        
         ecount_columns = [
             '일자', '순번', '거래처코드', '거래처명', '담당자', '출하창고', '거래유형', '통화', '환율', 
             '적요_전표', '미수금', '총합계', '연결전표', '품목코드', '품목명', '규격', '박스', '수량', 
             '단가', '외화금액', '공급가액', '부가세', '적요_품목', '생산전표생성', '시리얼/로트', 
-            '관리항목', '쇼핑몰고객명', 'original_order'
+            '관리항목', '쇼핑몰고객명', 'original_order', '실결제금액_sort'
         ]
         for col in ecount_columns:
             if col not in df_ecount_upload:
@@ -204,11 +206,12 @@ def process_all_files(file1, file2, file3, df_master):
         for col in ['공급가액', '부가세']:
             df_ecount_upload[col] = df_ecount_upload[col].round().astype('Int64')
         
+        # <<-- 최종 수정: 새로운 정렬 순서 적용 -->>
         sort_order = ['고래미자사몰_현금영수증(고도몰)', '스토어팜', '쿠팡 주식회사']
         df_ecount_upload['거래처명_sort'] = pd.Categorical(df_ecount_upload['거래처명'], categories=sort_order, ordered=True)
-        df_ecount_upload = df_ecount_upload.sort_values(by=['거래처명_sort', 'original_order']).drop(columns=['거래처명_sort', 'original_order'])
+        df_ecount_upload = df_ecount_upload.sort_values(by=['거래처명_sort', '실결제금액_sort'], ascending=[True, False]).drop(columns=['거래처명_sort', 'original_order', '실결제금액_sort'])
         
-        df_ecount_upload = df_ecount_upload[ecount_columns[:-1]]
+        df_ecount_upload = df_ecount_upload[ecount_columns[:-2]] # 정렬용 임시 컬럼 제외
 
         return df_main_result.drop(columns=['original_order']), df_quantity_summary, df_packing_list_final, df_ecount_upload, True, "모든 파일 처리가 성공적으로 완료되었습니다.", warnings
 
