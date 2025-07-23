@@ -435,15 +435,12 @@ G641E,혼마수산 연어알 500g,과세,
 """
         df_master = pd.read_csv(io.StringIO(master_data_string))
         
-        # <<-- 핵심 수정 1: 상품 마스터 데이터 사용 전, SKU코드를 기준으로 중복 제거 -->>
         df_master = df_master.drop_duplicates(subset=['SKU코드'], keep='first')
 
-        # 1. 사용자 업로드 파일 읽기
         df_smartstore = pd.read_excel(file1)
         df_ecount_orig = pd.read_excel(file2)
         df_godomall = pd.read_excel(file3)
 
-        # 2. 금액 보정하여 최종 주문 목록 생성
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
         
         key_cols_smartstore = ['재고관리코드', '주문수량', '수령자명']
@@ -466,7 +463,6 @@ G641E,혼마수산 연어알 500g,과세,
         
         df_main_result = df_final[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명']]
         
-        # 3. 물류팀용 파일 2종 생성
         df_quantity_summary = df_main_result.groupby('SKU상품명', as_index=False)['주문수량'].sum().rename(columns={'주문수량': '개수'})
         df_packing_list = df_main_result[['SKU상품명', '주문수량', '수령자명', '쇼핑몰']].copy()
         is_first_item = df_packing_list['수령자명'] != df_packing_list['수령자명'].shift(1)
@@ -475,7 +471,6 @@ G641E,혼마수산 연어알 500g,과세,
         df_packing_list_final['묶음번호'] = df_packing_list_final['묶음번호'].where(is_first_item, '')
         df_packing_list_final = df_packing_list_final[['묶음번호', 'SKU상품명', '주문수량', '수령자명', '쇼핑몰']]
 
-        # 4. 이카운트 업로드용 파일 생성
         df_merged = pd.merge(df_main_result, df_master[['SKU코드', '과세여부', '입수량']], left_on='재고관리코드', right_on='SKU코드', how='left')
         
         unmastered = df_merged[df_merged['SKU코드'].isna()]
@@ -493,11 +488,10 @@ G641E,혼마수산 연어알 500g,과세,
         df_ecount_upload['적요_전표'] = '오전/온라인'
         df_ecount_upload['품목코드'] = df_merged['재고관리코드']
         
-        # <<-- 핵심 수정 2: '수량' 계산 로직 수정 -->>
         입수량 = pd.to_numeric(df_merged['입수량'], errors='coerce').fillna(1)
         is_box = 입수량 > 1
         
-        df_ecount_upload['박스'] = np.where(is_box, df_merged['주문수량'], np.nan) # BOX 아닐 경우 NaN으로 두어 엑셀에서 빈칸으로 표시
+        df_ecount_upload['박스'] = np.where(is_box, df_merged['주문수량'], np.nan)
         df_ecount_upload['수량'] = (df_merged['주문수량'] * 입수량).astype(int)
         
         df_merged['실결제금액'] = pd.to_numeric(df_merged['실결제금액'], errors='coerce').fillna(0)
@@ -520,10 +514,12 @@ G641E,혼마수산 연어알 500g,과세,
         for col in ['공급가액', '부가세']:
             df_ecount_upload[col] = df_ecount_upload[col].round().astype('Int64')
         
-        # <<-- 핵심 수정 3: '정렬 순서' 학습 및 적용 -->>
         sort_order = ['고래미자사몰_현금영수증(고도몰)', '스토어팜', '쿠팡 주식회사']
         df_ecount_upload['거래처명'] = pd.Categorical(df_ecount_upload['거래처명'], categories=sort_order, ordered=True)
         df_ecount_upload = df_ecount_upload.sort_values(by='거래처명').reset_index(drop=True)
+        
+        # <<-- 최종 수정: 정렬 후 데이터 타입을 다시 일반 텍스트로 변경 -->>
+        df_ecount_upload['거래처명'] = df_ecount_upload['거래처명'].astype(object)
         
         df_ecount_upload = df_ecount_upload[ecount_columns]
 
