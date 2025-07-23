@@ -24,11 +24,13 @@ def to_excel_formatted(df, format_type=None):
     workbook = openpyxl.load_workbook(output)
     sheet = workbook.active
 
+    # 공통 서식: 모든 셀 가운데 정렬
     center_alignment = Alignment(horizontal='center', vertical='center')
     for row in sheet.iter_rows():
         for cell in row:
             cell.alignment = center_alignment
 
+    # 파일별 특수 서식
     for column_cells in sheet.columns:
         max_length = 0
         column = column_cells[0].column_letter
@@ -43,7 +45,7 @@ def to_excel_formatted(df, format_type=None):
         sheet.column_dimensions[column].width = adjusted_width
     
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
-    pink_fill = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid")
+    pink_fill = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid") # 연한 핑크
 
     if format_type == 'packing_list':
         for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=1, max_col=sheet.max_column):
@@ -100,6 +102,7 @@ def process_all_files(file1, file2, file3, df_master):
 
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
         
+        # <<-- 최종 수정: 고도몰 실결제금액 처리 로직 전면 수정 -->>
         last_col_name = df_godomall.columns[-1]
         df_godomall['수정될_금액_고도몰'] = pd.to_numeric(df_godomall[last_col_name].astype(str).str.replace(',', ''), errors='coerce')
         
