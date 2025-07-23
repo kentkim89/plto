@@ -36,16 +36,19 @@ def to_excel_formatted(df, format_type=None):
                 pass
         adjusted_width = (max_length + 2) * 1.2
         sheet.column_dimensions[column].width = adjusted_width
+    
+    # --- 서식 스타일 정의 ---
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+    pink_fill = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid") # 연한 핑크
 
+    # --- 포장 리스트 고급 서식 ---
     if format_type == 'packing_list':
-        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
-        odd_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-        
         for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=1, max_col=sheet.max_column):
             for cell in row:
                 cell.border = thin_border
         
         bundle_start_row = 2
+        # 루프를 마지막 행 + 1까지 실행하여 마지막 그룹 처리를 보장
         for row_num in range(2, sheet.max_row + 2):
             current_bundle_cell = sheet.cell(row=row_num, column=1)
             
@@ -59,15 +62,28 @@ def to_excel_formatted(df, format_type=None):
                         if prev_bundle_num % 2 != 0:
                             for r in range(bundle_start_row, bundle_end_row + 1):
                                 for c in range(1, sheet.max_column + 1):
-                                    sheet.cell(row=r, column=c).fill = odd_fill
+                                    sheet.cell(row=r, column=c).fill = pink_fill
                     
                     if bundle_start_row < bundle_end_row:
+                        # 묶음번호 및 수령자명 병합
                         sheet.merge_cells(start_row=bundle_start_row, start_column=1, end_row=bundle_end_row, end_column=1)
-                        merged_cell = sheet.cell(row=bundle_start_row, column=1)
-                        merged_cell.alignment = Alignment(vertical='center', horizontal='center')
+                        sheet.merge_cells(start_row=bundle_start_row, start_column=4, end_row=bundle_end_row, end_column=4)
+                        # 병합된 셀 중앙 정렬
+                        sheet.cell(row=bundle_start_row, column=1).alignment = Alignment(vertical='center', horizontal='center')
+                        sheet.cell(row=bundle_start_row, column=4).alignment = Alignment(vertical='center', horizontal='center')
                 
                 bundle_start_row = row_num
     
+    # --- 출고 수량 파일 서식 ---
+    if format_type == 'quantity_summary':
+        for row_idx, row in enumerate(sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=1, max_col=sheet.max_column)):
+            for cell in row:
+                cell.border = thin_border
+            # 헤더를 제외한 데이터 행에만 배경색 적용
+            if row_idx > 0 and row_idx % 2 != 0:
+                for cell in row:
+                    cell.fill = pink_fill
+
     final_output = io.BytesIO()
     workbook.save(final_output)
     final_output.seek(0)
@@ -111,6 +127,15 @@ def process_all_files(file1, file2, file3, df_master):
         
         df_main_result = df_final[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명', 'original_order']]
         
+        # 동명이인 가능성 확인 로직
+        homonym_warnings = []
+        unique_names = df_main_result['수령자명'].unique()
+        for name in unique_names:
+            indices = df_main_result[df_main_result['수령자명'] == name].index
+            if len(indices) > 1 and (indices.max() - indices.min() + 1) != len(indices):
+                homonym_warnings.append(f"- [동명이인 의심] **{name}** 님의 주문이 떨어져서 입력되었습니다. 확인이 필요합니다.")
+        warnings.extend(homonym_warnings)
+
         df_quantity_summary = df_main_result.groupby('SKU상품명', as_index=False)['주문수량'].sum().rename(columns={'주문수량': '개수'})
         df_packing_list = df_main_result.sort_values(by='original_order')[['SKU상품명', '주문수량', '수령자명', '쇼핑몰']].copy()
         is_first_item = df_packing_list['수령자명'] != df_packing_list['수령자명'].shift(1)
@@ -136,17 +161,11 @@ def process_all_files(file1, file2, file3, df_master):
         df_ecount_upload['적요_전표'] = '오전/온라인'
         df_ecount_upload['품목코드'] = df_merged['재고관리코드']
         
-        # <<-- 최종 수정된 '박스' 및 '수량' 계산 로직 -->>
         is_box_order = df_merged['SKU상품명'].str.contains("BOX", na=False)
         입수량 = pd.to_numeric(df_merged['입수량'], errors='coerce').fillna(1)
         
-        # 1단계: 기본 수량 계산
         base_quantity = np.where(is_box_order, df_merged['주문수량'] * 입수량, df_merged['주문수량'])
-        
-        # 2단계: '3개입' 또는 '3개' 특수 규칙 확인
         is_3_pack = df_merged['SKU상품명'].str.contains("3개입|3개", na=False)
-        
-        # 3단계: 최종 수량 계산
         final_quantity = np.where(is_3_pack, base_quantity * 3, base_quantity)
         
         df_ecount_upload['박스'] = np.where(is_box_order, df_merged['주문수량'], np.nan)
@@ -222,7 +241,7 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
                 if warnings:
                     st.warning("⚠️ 확인 필요 항목")
                     with st.expander("자세한 목록 보기..."):
-                        st.info("금액 보정 실패 또는 미등록 상품 등의 데이터입니다. 원본 파일을 확인해주세요.")
+                        st.info("금액 보정 실패, 미등록 상품, 동명이인 의심 등의 데이터입니다. 원본 파일을 확인해주세요.")
                         for warning_message in warnings:
                             st.markdown(warning_message)
                 
@@ -238,7 +257,7 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
 
                 with tab_qty:
                     st.dataframe(df_qty)
-                    st.download_button("📥 다운로드", to_excel_formatted(df_qty), f"물류팀_전달용_출고수량_{timestamp}.xlsx")
+                    st.download_button("📥 다운로드", to_excel_formatted(df_qty, format_type='quantity_summary'), f"물류팀_전달용_출고수량_{timestamp}.xlsx")
                 
                 with tab_main:
                     st.dataframe(df_main)
