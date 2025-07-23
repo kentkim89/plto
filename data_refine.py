@@ -16,7 +16,6 @@ def to_excel_formatted(df, format_type=None):
     output = io.BytesIO()
     df_to_save = df.fillna('')
     
-    # 다운로드 직전에만 이카운트 양식에 맞게 열 이름 변경
     if format_type == 'ecount_upload':
         df_to_save = df_to_save.rename(columns={'적요_전표': '적요', '적요_품목': '적요.1'})
 
@@ -105,8 +104,7 @@ def process_all_files(file1, file2, file3, df_master):
         df_final = pd.merge(df_final, smartstore_prices, on=key_cols_smartstore, how='left')
         df_final = pd.merge(df_final, godomall_prices_for_merge, on=['수령자명', '주문수량', '실결제금액'], how='left')
         
-        warnings = [f"- [스마트스토어] 금액보정 실패: **{row['수령자명']}** / {row['SKU상품명']}" for _, row in df_final[(df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna())].iterrows()]
-        warnings.extend([f"- [고도몰5] 금액보정 실패: **{row['수령자명']}** / {row['SKU상품명']}" for _, row in df_final[(df_final['쇼핑몰'] == '고도몰5') & (df_final['수정될_금액_고도몰'].isna())].iterrows()])
+        warnings = [f"- [금액보정 실패] **{row['쇼핑몰']}** / {row['수령자명']} / {row['SKU상품명']}" for _, row in df_final[(df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna()) | (df_final['쇼핑몰'] == '고도몰5') & (df_final['수정될_금액_고도몰'].isna())].iterrows()]
         
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '고도몰5', df_final['수정될_금액_고도몰'].fillna(df_final['실결제금액']), df_final['실결제금액'])
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '스마트스토어', df_final['수정될_금액_스토어'].fillna(df_final['실결제금액']), df_final['실결제금액'])
@@ -125,9 +123,9 @@ def process_all_files(file1, file2, file3, df_master):
         
         unmastered = df_merged[df_merged['SKU코드'].isna()]
         for _, row in unmastered.iterrows():
-            warnings.append(f"- [미등록 상품] 상품코드: **{row['재고관리코드']}** / {row['SKU상품명']}")
+            warnings.append(f"- [미등록 상품] **{row['재고관리코드']}** / {row['SKU상품명']}")
 
-        client_map = {'쿠팡': '쿠팡 주식회사', '고도몰5': '고래미자사몰_현금영수증(고도몰)', '스마트스토어': '스토어팜', '배민상회': '주식회사 우아한형제들(배민상회)', '이지웰': '주식회사 현대이지웰'}
+        client_map = {'쿠팡': '쿠팡 주식회사', '고도몰5': '고래미자사몰_현금영수증(고도몰)', '스마트스토어': '스토어팜'}
         
         df_ecount_upload = pd.DataFrame()
         
@@ -138,11 +136,12 @@ def process_all_files(file1, file2, file3, df_master):
         df_ecount_upload['적요_전표'] = '오전/온라인'
         df_ecount_upload['품목코드'] = df_merged['재고관리코드']
         
+        # <<-- 최종 수정된 '박스' 및 '수량' 계산 로직 -->>
+        is_box_order = df_merged['SKU상품명'].str.contains("BOX", na=False)
         입수량 = pd.to_numeric(df_merged['입수량'], errors='coerce').fillna(1)
-        is_box_item = 입수량 > 1
         
-        df_ecount_upload['박스'] = np.where(is_box_item, df_merged['주문수량'], np.nan)
-        df_ecount_upload['수량'] = (df_merged['주문수량'] * 입수량).astype(int)
+        df_ecount_upload['박스'] = np.where(is_box_order, df_merged['주문수량'], np.nan)
+        df_ecount_upload['수량'] = np.where(is_box_order, df_merged['주문수량'] * 입수량, df_merged['주문수량']).astype(int)
         
         df_merged['실결제금액'] = pd.to_numeric(df_merged['실결제금액'], errors='coerce').fillna(0)
         공급가액 = np.where(df_merged['과세여부'] == '과세', df_merged['실결제금액'] / 1.1, df_merged['실결제금액'])
@@ -169,7 +168,7 @@ def process_all_files(file1, file2, file3, df_master):
         df_ecount_upload['거래처명_sort'] = pd.Categorical(df_ecount_upload['거래처명'], categories=sort_order, ordered=True)
         df_ecount_upload = df_ecount_upload.sort_values(by=['거래처명_sort', 'original_order']).drop(columns=['거래처명_sort', 'original_order'])
         
-        df_ecount_upload = df_ecount_upload[ecount_columns[:-1]] # original_order 제외하고 최종 선택
+        df_ecount_upload = df_ecount_upload[ecount_columns[:-1]]
 
         return df_main_result.drop(columns=['original_order']), df_quantity_summary, df_packing_list_final, df_ecount_upload, True, "모든 파일 처리가 성공적으로 완료되었습니다.", warnings
 
@@ -179,12 +178,11 @@ def process_all_files(file1, file2, file3, df_master):
         st.error(traceback.format_exc())
         return None, None, None, None, False, f"오류가 발생했습니다. 파일을 다시 확인하거나 관리자에게 문의하세요.", []
 
-
 # --------------------------------------------------------------------------
 # Streamlit 앱 UI 구성
 # --------------------------------------------------------------------------
-st.set_page_config(page_title="주문 처리 자동화 v.Final-Complete", layout="wide")
-st.title("📑 주문 처리 자동화 (v.Final-Complete)")
+st.set_page_config(page_title="주문 처리 자동화 v.Final-Masterpiece", layout="wide")
+st.title("📑 주문 처리 자동화 (v.Final-Masterpiece)")
 st.info("💡 3개의 주문 관련 파일을 업로드하면, 금액 보정, 물류, ERP(이카운트)용 데이터가 한 번에 생성됩니다.")
 st.write("---")
 
