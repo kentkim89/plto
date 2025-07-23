@@ -14,7 +14,6 @@ from datetime import datetime
 def to_excel_formatted(df, format_type=None):
     """데이터프레임을 서식이 적용된 엑셀 파일 형식의 BytesIO 객체로 변환하는 함수"""
     output = io.BytesIO()
-    # NaN 값을 빈 문자열로 바꿔서 저장
     df_to_save = df.fillna('')
     df_to_save.to_excel(output, index=False, sheet_name='Sheet1')
     
@@ -28,14 +27,11 @@ def to_excel_formatted(df, format_type=None):
         for cell in column_cells:
             try:
                 if cell.value:
-                    # 셀 내용의 길이를 측정
                     cell_text = str(cell.value)
-                    # 현재 셀의 길이가 기존 최대 길이보다 길면 업데이트
                     if len(cell_text) > max_length:
                         max_length = len(cell_text)
             except:
                 pass
-        # 계산된 최대 길이에 약간의 여유를 주어 너비 설정
         adjusted_width = (max_length + 2) * 1.2
         sheet.column_dimensions[column].width = adjusted_width
 
@@ -44,7 +40,6 @@ def to_excel_formatted(df, format_type=None):
         thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
         odd_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
         
-        # 모든 셀에 기본 테두리 적용
         for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=1, max_col=sheet.max_column):
             for cell in row:
                 cell.border = thin_border
@@ -53,26 +48,20 @@ def to_excel_formatted(df, format_type=None):
         for row_num in range(2, sheet.max_row + 2):
             current_bundle_cell = sheet.cell(row=row_num, column=1)
             
-            # 묶음번호가 있거나 마지막 행에 도달하면 이전 그룹에 서식 적용
             if (current_bundle_cell.value) or (row_num > sheet.max_row):
                 if row_num > 2:
                     bundle_end_row = row_num - 1
-                    
-                    # 이전 그룹의 묶음번호 (문자열로 처리하여 오류 방지)
                     prev_bundle_num_str = str(sheet.cell(row=bundle_start_row, column=1).value)
                     
-                    # 묶음번호가 숫자일 경우에만 홀/짝 배경색 적용
                     if prev_bundle_num_str.isdigit():
                         prev_bundle_num = int(prev_bundle_num_str)
-                        if prev_bundle_num % 2 != 0: # 홀수 묶음번호 그룹
+                        if prev_bundle_num % 2 != 0:
                             for r in range(bundle_start_row, bundle_end_row + 1):
                                 for c in range(1, sheet.max_column + 1):
                                     sheet.cell(row=r, column=c).fill = odd_fill
                     
-                    # 셀 병합 (묶음이 2줄 이상일 경우)
                     if bundle_start_row < bundle_end_row:
                         sheet.merge_cells(start_row=bundle_start_row, start_column=1, end_row=bundle_end_row, end_column=1)
-                        # 병합된 셀은 수직/수평 중앙 정렬
                         merged_cell = sheet.cell(row=bundle_start_row, column=1)
                         merged_cell.alignment = Alignment(vertical='center', horizontal='center')
                 
@@ -88,7 +77,7 @@ def to_excel_formatted(df, format_type=None):
 def process_all_files(file1, file2, file3):
     """3개의 파일을 받아 4종류의 최종 결과물을 생성하는 메인 함수"""
     try:
-        # <<-- 핵심 변경점: 상품 마스터 정보를 코드 내에 데이터로 직접 내장 -->>
+        # 상품 마스터 정보를 코드 내에 데이터로 직접 내장
         master_data_string = """SKU코드,SKU상품명,과세여부,입수량
 G604E,[BOX] 가쓰오 슈토우 1kg,과세,6
 S011E,[BOX] 고래미 가라아게파우더2kg,과세,
@@ -452,9 +441,9 @@ G641E,혼마수산 연어알 500g,과세,
         df_ecount_orig = pd.read_excel(file2)
         df_godomall = pd.read_excel(file3)
 
-        # 2. (기존 로직) 금액 보정하여 최종 주문 목록 생성
+        # 2. 금액 보정하여 최종 주문 목록 생성
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
-        # ... (이하 모든 데이터 처리 로직은 이전과 동일하게 유지됩니다) ...
+        
         key_cols_smartstore = ['재고관리코드', '주문수량', '수령자명']
         smartstore_prices = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})[key_cols_smartstore + ['수정될_금액_스토어']].drop_duplicates(subset=key_cols_smartstore, keep='first')
         
@@ -475,7 +464,7 @@ G641E,혼마수산 연어알 500g,과세,
         
         df_main_result = df_final[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명']]
         
-        # 3. (기존 로직) 물류팀용 파일 2종 생성
+        # 3. 물류팀용 파일 2종 생성
         df_quantity_summary = df_main_result.groupby('SKU상품명', as_index=False)['주문수량'].sum().rename(columns={'주문수량': '개수'})
         df_packing_list = df_main_result[['SKU상품명', '주문수량', '수령자명', '쇼핑몰']].copy()
         is_first_item = df_packing_list['수령자명'] != df_packing_list['수령자명'].shift(1)
@@ -484,7 +473,7 @@ G641E,혼마수산 연어알 500g,과세,
         df_packing_list_final['묶음번호'] = df_packing_list_final['묶음번호'].where(is_first_item, '')
         df_packing_list_final = df_packing_list_final[['묶음번호', 'SKU상품명', '주문수량', '수령자명', '쇼핑몰']]
 
-        # 4. (신규 로직) 이카운트 업로드용 파일 생성
+        # 4. 이카운트 업로드용 파일 생성
         df_merged = pd.merge(df_main_result, df_master[['SKU코드', '과세여부', '입수량']], left_on='재고관리코드', right_on='SKU코드', how='left')
         
         unmastered = df_merged[df_merged['SKU코드'].isna()]
@@ -498,7 +487,10 @@ G641E,혼마수산 연어알 500g,과세,
         df_ecount_upload['거래처명'] = df_merged['쇼핑몰'].map(client_map).fillna(df_merged['쇼핑몰'])
         df_ecount_upload['출하창고'] = '고래미'
         df_ecount_upload['거래유형'] = np.where(df_merged['과세여부'] == '면세', 12, 11)
-        df_ecount_upload['적요'] = '오전/온라인'
+        
+        # <<-- 수정된 부분 1: '적요_전표'로 이름 변경 -->>
+        df_ecount_upload['적요_전표'] = '오전/온라인'
+        
         df_ecount_upload['품목코드'] = df_merged['재고관리코드']
         
         is_box = df_merged['SKU상품명'].str.contains('BOX', na=False)
@@ -514,12 +506,17 @@ G641E,혼마수산 연어알 500g,과세,
         
         df_ecount_upload['쇼핑몰고객명'] = df_merged['수령자명']
         
-        ecount_columns = ['일자', '순번', '거래처코드', '거래처명', '담당자', '출하창고', '거래유형', '통화', '환율', '적요', '미수금', '총합계', '연결전표', '품목코드', '품목명', '규격', '박스', '수량', '단가', '외화금액', '공급가액', '부가세', '적요', '생산전표생성', '시리얼/로트', '관리항목', '쇼핑몰고객명']
+        # <<-- 수정된 부분 2: '적요'를 '적요_전표'와 '적요_품목'으로 분리 -->>
+        ecount_columns = [
+            '일자', '순번', '거래처코드', '거래처명', '담당자', '출하창고', '거래유형', '통화', '환율', 
+            '적요_전표', '미수금', '총합계', '연결전표', '품목코드', '품목명', '규격', '박스', '수량', 
+            '단가', '외화금액', '공급가액', '부가세', '적요_품목', '생산전표생성', '시리얼/로트', 
+            '관리항목', '쇼핑몰고객명'
+        ]
         for col in ecount_columns:
             if col not in df_ecount_upload:
                 df_ecount_upload[col] = ''
         
-        # 금액 관련 컬럼을 정수형으로 변환
         for col in ['공급가액', '부가세']:
             df_ecount_upload[col] = df_ecount_upload[col].round().astype('Int64')
 
@@ -530,15 +527,15 @@ G641E,혼마수산 연어알 500g,과세,
     except Exception as e:
         import traceback
         st.error(f"오류 발생: {e}")
-        st.error(traceback.format_exc())
-        return None, None, None, None, False, f"오류가 발생했습니다: {e}. 업로드한 파일 또는 내부 로직을 확인해주세요.", []
+        st.error(traceback.format_exc()) # 디버깅을 위해 전체 오류 로그를 출력
+        return None, None, None, None, False, f"오류가 발생했습니다: {e}. 내부 로직을 확인해주세요.", []
 
 
 # --------------------------------------------------------------------------
 # Streamlit 앱 UI 구성
 # --------------------------------------------------------------------------
-st.set_page_config(page_title="주문 처리 자동화 v.Ultimate", layout="wide")
-st.title("📑 주문 처리 자동화 (v.Ultimate)")
+st.set_page_config(page_title="주문 처리 자동화 v.Ultimate-Fix", layout="wide")
+st.title("📑 주문 처리 자동화 (v.Ultimate-Fix)")
 st.info("💡 3개의 주문 관련 파일을 업로드하면, 금액 보정, 물류, ERP(이카운트)용 데이터가 한 번에 생성됩니다.")
 st.write("---")
 
@@ -571,7 +568,9 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
             tab_erp, tab_pack, tab_qty, tab_main = st.tabs(["🏢 **이카운트 업로드용**", "📋 포장 리스트", "📦 출고수량 요약", "✅ 최종 보정 리스트"])
             
             with tab_erp:
+                # 화면 표시는 .astype(str)로 안전하게 처리
                 st.dataframe(df_ecount.astype(str))
+                # 다운로드 파일은 to_excel_formatted 함수에서 처리하므로 원본 df_ecount 전달
                 st.download_button("📥 다운로드", to_excel_formatted(df_ecount), f"이카운트_업로드용_{timestamp}.xlsx")
 
             with tab_pack:
