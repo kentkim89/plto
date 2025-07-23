@@ -14,7 +14,13 @@ from datetime import datetime
 def to_excel_formatted(df, format_type=None):
     """데이터프레임을 서식이 적용된 엑셀 파일 형식의 BytesIO 객체로 변환하는 함수"""
     output = io.BytesIO()
+    # NaN 값을 빈 문자열로 바꿔서 저장
     df_to_save = df.fillna('')
+    
+    # 이카운트 파일의 경우, 특정 열 이름을 양식에 맞게 변경
+    if format_type == 'ecount_upload':
+        df_to_save = df_to_save.rename(columns={'적요_전표': '적요', '적요_품목': '적요.1'})
+
     df_to_save.to_excel(output, index=False, sheet_name='Sheet1')
     
     workbook = openpyxl.load_workbook(output)
@@ -23,15 +29,16 @@ def to_excel_formatted(df, format_type=None):
     # 1. 셀 너비 자동 조절
     for column_cells in sheet.columns:
         max_length = 0
-        column = column_cells[0].column_letter
+        column = column_cells[0].column_letter # A, B, C ...
         for cell in column_cells:
             try:
                 if cell.value:
-                    cell_text = str(cell.value)
-                    if len(cell_text) > max_length:
-                        max_length = len(cell_text)
+                    # 현재 셀의 길이가 기존 최대 길이보다 길면 업데이트
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
             except:
                 pass
+        # 계산된 최대 길이에 약간의 여유를 주어 너비 설정
         adjusted_width = (max_length + 2) * 1.2
         sheet.column_dimensions[column].width = adjusted_width
 
@@ -467,7 +474,7 @@ G641E,혼마수산 연어알 500g,과세,
         df_main_result = df_final[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명']]
         
         # 3. 물류팀용 파일 2종 생성
-        df_quantity_summary = df_main_result.groupby('SKU상품명', as_index=False)['주문수량'].sum().rename(columns={'주문수량': '개수'})
+        df_quantity_summary = df_main_result.groupby('SKU상품명', as_index=False)['주문수량'].sum().rename(columns={'개수': '개수'})
         df_packing_list = df_main_result[['SKU상품명', '주문수량', '수령자명', '쇼핑몰']].copy()
         is_first_item = df_packing_list['수령자명'] != df_packing_list['수령자명'].shift(1)
         df_packing_list['묶음번호'] = is_first_item.cumsum()
@@ -486,9 +493,7 @@ G641E,혼마수산 연어알 500g,과세,
         
         df_ecount_upload = pd.DataFrame()
         
-        # '일자' 열에 오늘 날짜 자동 입력
         df_ecount_upload['일자'] = datetime.now().strftime("%Y%m%d")
-        
         df_ecount_upload['거래처명'] = df_merged['쇼핑몰'].map(client_map).fillna(df_merged['쇼핑몰'])
         df_ecount_upload['출하창고'] = '고래미'
         df_ecount_upload['거래유형'] = np.where(df_merged['과세여부'] == '면세', 12, 11)
@@ -521,16 +526,7 @@ G641E,혼마수산 연어알 500g,과세,
         for col in ['공급가액', '부가세']:
             df_ecount_upload[col] = df_ecount_upload[col].round().astype('Int64')
         
-        # 최종 컬럼 순서 정리 및 이름 변경
-        df_ecount_upload = df_ecount_upload.rename(columns={'적요_전표': '적요', '적요_품목': '적요.1'})
-        final_ecount_columns = [
-            '일자', '순번', '거래처코드', '거래처명', '담당자', '출하창고', '거래유형', '통화', '환율', 
-            '적요', '미수금', '총합계', '연결전표', '품목코드', '품목명', '규격', '박스', '수량', 
-            '단가', '외화금액', '공급가액', '부가세', '적요.1', '생산전표생성', '시리얼/로트', 
-            '관리항목', '쇼핑몰고객명'
-        ]
-        df_ecount_upload = df_ecount_upload[final_ecount_columns]
-
+        df_ecount_upload = df_ecount_upload[ecount_columns]
 
         return df_main_result, df_quantity_summary, df_packing_list_final, df_ecount_upload, True, "모든 파일 처리가 성공적으로 완료되었습니다.", warnings
 
@@ -544,7 +540,7 @@ G641E,혼마수산 연어알 500g,과세,
 # --------------------------------------------------------------------------
 # Streamlit 앱 UI 구성
 # --------------------------------------------------------------------------
-st.set_page_config(page_title="주문 처리 자동화 v.Final-Edition", layout="wide")
+st.set_page_config(page_title="주문 처리 자동화 v.Final-Edition (Fix)", layout="wide")
 st.title("📑 주문 처리 자동화 (v.Final-Edition)")
 st.info("💡 3개의 주문 관련 파일을 업로드하면, 금액 보정, 물류, ERP(이카운트)용 데이터가 한 번에 생성됩니다.")
 st.write("---")
@@ -573,13 +569,14 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
                 st.warning("⚠️ 확인 필요 항목")
                 with st.expander("자세한 목록 보기..."):
                     st.info("금액 보정 실패 또는 미등록 상품 등의 데이터입니다. 원본 파일을 확인해주세요.")
-                    for warning_message in warnings: st.markdown(warning_message)
+                    for warning_message in warnings:
+                        st.markdown(warning_message)
             
             tab_erp, tab_pack, tab_qty, tab_main = st.tabs(["🏢 **이카운트 업로드용**", "📋 포장 리스트", "📦 출고수량 요약", "✅ 최종 보정 리스트"])
             
             with tab_erp:
                 st.dataframe(df_ecount.astype(str))
-                st.download_button("📥 다운로드", to_excel_formatted(df_ecount), f"이카운트_업로드용_{timestamp}.xlsx")
+                st.download_button("📥 다운로드", to_excel_formatted(df_ecount, format_type='ecount_upload'), f"이카운트_업로드용_{timestamp}.xlsx")
 
             with tab_pack:
                 st.dataframe(df_pack)
@@ -596,4 +593,4 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
         else:
             st.error(message)
     else:
-        st.warning("⚠️ 3개의 엑셀 파일을 모두 업로드해야 실행할 수 있습니다.")```
+        st.warning("⚠️ 3개의 엑셀 파일을 모두 업로드해야 실행할 수 있습니다.")
