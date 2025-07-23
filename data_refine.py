@@ -162,7 +162,16 @@ def process_all_files(file1, file2, file3, df_master):
         for _, row in unmastered.iterrows():
             warnings.append(f"- [미등록 상품] **{row['재고관리코드']}** / {row['SKU상품명']}")
 
-        client_map = {'쿠팡': '쿠팡 주식회사', '고도몰5': '고래미자사몰_현금영수증(고도몰)', '스마트스토어': '스토어팜'}
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        # 수정된 부분 1: 신규 거래처 매핑 추가
+        client_map = {
+            '쿠팡': '쿠팡 주식회사', 
+            '고도몰5': '고래미자사몰_현금영수증(고도몰)', 
+            '스마트스토어': '스토어팜',
+            '배민상회': '주식회사 우아한형제들(배민상회)',
+            '이지웰몰': '주식회사 현대이지웰'
+        }
+        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         df_ecount_upload = pd.DataFrame()
         
@@ -202,18 +211,25 @@ def process_all_files(file1, file2, file3, df_master):
         for col in ['공급가액', '부가세']:
             df_ecount_upload[col] = df_ecount_upload[col].round().astype('Int64')
         
-        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 정렬 로직 수정: '거래유형'을 숫자 타입으로 변환 후 정렬
         df_ecount_upload['거래유형'] = pd.to_numeric(df_ecount_upload['거래유형'])
         
-        sort_order = ['고래미자사몰_현금영수증(고도몰)', '스토어팜', '쿠팡 주식회사']
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        # 수정된 부분 2: 신규 거래처 정렬 순서에 추가
+        sort_order = [
+            '고래미자사몰_현금영수증(고도몰)', 
+            '스토어팜', 
+            '쿠팡 주식회사',
+            '주식회사 우아한형제들(배민상회)',
+            '주식회사 현대이지웰'
+        ]
+        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+        
         df_ecount_upload['거래처명_sort'] = pd.Categorical(df_ecount_upload['거래처명'], categories=sort_order, ordered=True)
         
         df_ecount_upload = df_ecount_upload.sort_values(
             by=['거래처명_sort', '거래유형', 'original_order'],
             ascending=[True, True, True]
         ).drop(columns=['거래처명_sort', 'original_order'])
-        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         df_ecount_upload = df_ecount_upload[ecount_columns[:-1]]
 
