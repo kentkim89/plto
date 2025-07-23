@@ -24,13 +24,13 @@ def to_excel_formatted(df, format_type=None):
     workbook = openpyxl.load_workbook(output)
     sheet = workbook.active
 
-    # 공통 서식: 모든 셀 가운데 정렬
+    # --- 공통 서식: 모든 셀 가운데 정렬 ---
     center_alignment = Alignment(horizontal='center', vertical='center')
     for row in sheet.iter_rows():
         for cell in row:
             cell.alignment = center_alignment
 
-    # 파일별 특수 서식
+    # --- 파일별 특수 서식 ---
     for column_cells in sheet.columns:
         max_length = 0
         column = column_cells[0].column_letter
@@ -54,10 +54,8 @@ def to_excel_formatted(df, format_type=None):
         
         bundle_start_row = 2
         for row_num in range(2, sheet.max_row + 2):
-            # 마지막 그룹 처리를 위해 루프를 한 번 더 실행
             current_bundle_cell = sheet.cell(row=row_num, column=1) if row_num <= sheet.max_row else None
             
-            # 새 묶음이 시작되거나, 마지막 행을 지난 경우 이전 그룹에 서식 적용
             if (current_bundle_cell and current_bundle_cell.value) or (row_num > sheet.max_row):
                 if row_num > 2:
                     bundle_end_row = row_num - 1
@@ -71,7 +69,6 @@ def to_excel_formatted(df, format_type=None):
                                     sheet.cell(row=r, column=c).fill = pink_fill
                     
                     if bundle_start_row < bundle_end_row:
-                        # 묶음번호 및 수령자명 병합
                         sheet.merge_cells(start_row=bundle_start_row, start_column=1, end_row=bundle_end_row, end_column=1)
                         sheet.merge_cells(start_row=bundle_start_row, start_column=4, end_row=bundle_end_row, end_column=4)
                 
@@ -105,15 +102,8 @@ def process_all_files(file1, file2, file3, df_master):
 
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
         
-        # <<-- 최종 수정: 고도몰 실결제금액 처리 로직 전면 수정 -->>
-        cols_to_numeric = ['상품별 품목금액', '총 배송 금액', '회 할인 금액', '쿠폰 할인 금액', '사용된 마일리지']
-        for col in cols_to_numeric:
-            df_godomall[col] = pd.to_numeric(df_godomall[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-        
-        df_godomall['수정될_금액_고도몰'] = (
-            df_godomall['상품별 품목금액'] + df_godomall['총 배송 금액'] - df_godomall['회 할인 금액'] - 
-            df_godomall['쿠폰 할인 금액'] - df_godomall['사용된 마일리지']
-        )
+        last_col_name = df_godomall.columns[-1]
+        df_godomall['수정될_금액_고도몰'] = pd.to_numeric(df_godomall[last_col_name].astype(str).str.replace(',', ''), errors='coerce')
         
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
         
@@ -121,19 +111,24 @@ def process_all_files(file1, file2, file3, df_master):
         smartstore_prices = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})[key_cols_smartstore + ['수정될_금액_스토어']].drop_duplicates(subset=key_cols_smartstore, keep='first')
         
         # <<-- 최종 수정: 고도몰 금액 보정을 위한 연결고리(Key) 변경 -->>
-        # 병합 전 키 데이터 타입 통일 및 공백 제거
-        df_godomall['수취인 이름'] = df_godomall['수취인 이름'].str.strip()
-        df_godomall['상품수량'] = pd.to_numeric(df_godomall['상품수량'], errors='coerce').fillna(0).astype(int)
+        key_cols_godomall = ['수취인 이름', '상품수량', '상품별 품목금액']
+        godomall_prices_for_merge = df_godomall[key_cols_godomall + ['수정될_금액_고도몰']].rename(columns={'수취인 이름': '수령자명', '상품수량': '주문수량', '상품별 품목금액': '실결제금액'})
+        godomall_prices_for_merge = godomall_prices_for_merge.drop_duplicates(subset=['수령자명', '주문수량', '실결제금액'], keep='first')
         
-        df_final['수령자명'] = df_final['수령자명'].str.strip()
+        # 데이터 병합 전, 키로 사용될 열들의 데이터 타입을 통일 (공백 제거 포함)
+        df_final['수령자명'] = df_final['수령자명'].astype(str).str.strip()
         df_final['주문수량'] = pd.to_numeric(df_final['주문수량'], errors='coerce').fillna(0).astype(int)
+        df_final['실결제금액'] = pd.to_numeric(df_final['실결제금액'], errors='coerce').fillna(0).astype(int)
         
-        key_cols_godomall = ['수취인 이름', '상품수량']
-        godomall_prices_for_merge = df_godomall[key_cols_godomall + ['수정될_금액_고도몰']].rename(columns={'수취인 이름': '수령자명', '상품수량': '주문수량'})
-        godomall_prices_for_merge = godomall_prices_for_merge.drop_duplicates(subset=['수령자명', '주문수량'], keep='first')
+        smartstore_prices['수령자명'] = smartstore_prices['수령자명'].astype(str).str.strip()
+        smartstore_prices['주문수량'] = pd.to_numeric(smartstore_prices['주문수량'], errors='coerce').fillna(0).astype(int)
+        
+        godomall_prices_for_merge['수령자명'] = godomall_prices_for_merge['수령자명'].astype(str).str.strip()
+        godomall_prices_for_merge['주문수량'] = pd.to_numeric(godomall_prices_for_merge['주문수량'], errors='coerce').fillna(0).astype(int)
+        godomall_prices_for_merge['실결제금액'] = pd.to_numeric(godomall_prices_for_merge['실결제금액'], errors='coerce').fillna(0).astype(int)
 
         df_final = pd.merge(df_final, smartstore_prices, on=key_cols_smartstore, how='left')
-        df_final = pd.merge(df_final, godomall_prices_for_merge, on=['수령자명', '주문수량'], how='left')
+        df_final = pd.merge(df_final, godomall_prices_for_merge, on=['수령자명', '주문수량', '실결제금액'], how='left')
 
         warnings = [f"- [금액보정 실패] **{row['쇼핑몰']}** / {row['수령자명']} / {row['SKU상품명']}" for _, row in df_final[(df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna()) | (df_final['쇼핑몰'] == '고도몰5') & (df_final['수정될_금액_고도몰'].isna())].iterrows()]
         
@@ -281,4 +276,4 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
             st.error(f"🚨 상품 마스터 파일을 읽는 중 예상치 못한 오류가 발생했습니다: {e}")
 
     else:
-        st.warning("⚠️ 3개의 엑셀 파일을 모두 업로드해야 실행할 수 있습니다.")
+        st.warning("⚠️ 3개의 엑셀 파일을 모두 업로드해야 실행할 수 있습니다.")```
