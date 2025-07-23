@@ -74,10 +74,10 @@ def to_excel_formatted(df, format_type=None):
     
     return final_output.getvalue()
 
-@st.cache_data(ttl=600) # 10분 동안 상품 마스터 데이터를 캐시에 저장하여 빠르게 재사용
-def load_master_data(url):
-    """GitHub URL에서 상품 마스터 데이터를 로드하고 전처리하는 함수"""
-    df_master = pd.read_csv(url)
+@st.cache_data # 파일 내용이 바뀌지 않으면 다시 읽지 않도록 캐시 사용
+def load_local_master_data(file_path="master_data.csv"):
+    """로컬 경로에서 상품 마스터 데이터를 로드하고 전처리하는 함수"""
+    df_master = pd.read_csv(file_path)
     df_master = df_master.drop_duplicates(subset=['SKU코드'], keep='first')
     return df_master
 
@@ -128,7 +128,7 @@ def process_all_files(file1, file2, file3, df_master):
         
         df_ecount_upload = pd.DataFrame()
         
-        df_ecount_upload['일자'] = datetime.now().strftime("%Ym%d")
+        df_ecount_upload['일자'] = datetime.now().strftime("%Y%m%d")
         df_ecount_upload['거래처명'] = df_merged['쇼핑몰'].map(client_map).fillna(df_merged['쇼핑몰'])
         df_ecount_upload['출하창고'] = '고래미'
         df_ecount_upload['거래유형'] = np.where(df_merged['과세여부'] == '면세', 12, 11)
@@ -136,10 +136,10 @@ def process_all_files(file1, file2, file3, df_master):
         df_ecount_upload['품목코드'] = df_merged['재고관리코드']
         
         입수량 = pd.to_numeric(df_merged['입수량'], errors='coerce').fillna(1)
-        is_box_item_in_master = 입수량 > 1
+        is_box_item = 입수량 > 1
         
-        df_ecount_upload['박스'] = np.where(is_box_item_in_master, df_merged['주문수량'], np.nan)
-        df_ecount_upload['수량'] = np.where(is_box_item_in_master, df_merged['주문수량'] * 입수량, df_merged['주문수량']).astype(int)
+        df_ecount_upload['박스'] = np.where(is_box_item, df_merged['주문수량'], np.nan)
+        df_ecount_upload['수량'] = (df_merged['주문수량'] * 입수량).astype(int)
         
         df_merged['실결제금액'] = pd.to_numeric(df_merged['실결제금액'], errors='coerce').fillna(0)
         공급가액 = np.where(df_merged['과세여부'] == '과세', df_merged['실결제금액'] / 1.1, df_merged['실결제금액'])
@@ -173,23 +173,18 @@ def process_all_files(file1, file2, file3, df_master):
 
     except Exception as e:
         import traceback
-        st.error(f"오류 발생: {e}")
+        st.error(f"처리 중 심각한 오류가 발생했습니다: {e}")
         st.error(traceback.format_exc())
-        return None, None, None, None, False, f"오류가 발생했습니다: {e}. 내부 로직을 확인해주세요.", []
+        return None, None, None, None, False, f"오류가 발생했습니다. 파일을 다시 확인하거나 관리자에게 문의하세요.", []
 
 
 # --------------------------------------------------------------------------
 # Streamlit 앱 UI 구성
 # --------------------------------------------------------------------------
-st.set_page_config(page_title="주문 처리 자동화 v.Final-Pro", layout="wide")
-st.title("📑 주문 처리 자동화 (v.Final-Pro)")
+st.set_page_config(page_title="주문 처리 자동화 v.Final-Complete", layout="wide")
+st.title("📑 주문 처리 자동화 (v.Final-Complete)")
 st.info("💡 3개의 주문 관련 파일을 업로드하면, 금액 보정, 물류, ERP(이카운트)용 데이터가 한 번에 생성됩니다.")
 st.write("---")
-
-# <<-- 핵심 수정: GitHub Raw URL을 여기에 입력 -->>
-MASTER_DATA_URL = "YOUR_GITHUB_RAW_URL_HERE"
-st.text_input("상품 마스터 데이터 URL (GitHub Raw)", value=MASTER_DATA_URL)
-
 
 st.header("1. 원본 엑셀 파일 3개 업로드")
 col1, col2, col3 = st.columns(3)
@@ -205,8 +200,8 @@ st.header("2. 처리 결과 확인 및 다운로드")
 if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
     if file1 and file2 and file3:
         try:
-            # GitHub에서 상품 마스터 데이터 로드
-            df_master = load_master_data(MASTER_DATA_URL)
+            # 로컬에서 상품 마스터 데이터 로드
+            df_master = load_local_master_data("master_data.csv")
             
             with st.spinner('모든 파일을 읽고 데이터를 처리하며 엑셀 서식을 적용 중입니다...'):
                 df_main, df_qty, df_pack, df_ecount, success, message, warnings = process_all_files(file1, file2, file3, df_master)
@@ -239,12 +234,13 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
                 with tab_main:
                     st.dataframe(df_main)
                     st.download_button("📥 다운로드", to_excel_formatted(df_main), f"최종_실결제금액_보정완료_{timestamp}.xlsx")
-
             else:
                 st.error(message)
         
+        except FileNotFoundError:
+            st.error("🚨 치명적 오류: `master_data.csv` 파일을 찾을 수 없습니다! `app.py`와 동일한 폴더에 파일이 있는지 반드시 확인해주세요.")
         except Exception as e:
-            st.error(f"상품 마스터 데이터를 불러오는 데 실패했습니다. GitHub URL을 확인해주세요: {e}")
+            st.error(f"🚨 상품 마스터 파일을 읽는 중 예상치 못한 오류가 발생했습니다: {e}")
 
     else:
         st.warning("⚠️ 3개의 엑셀 파일을 모두 업로드해야 실행할 수 있습니다.")
