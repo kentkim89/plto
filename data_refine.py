@@ -24,16 +24,16 @@ def to_excel_formatted(df, format_type=None):
     workbook = openpyxl.load_workbook(output)
     sheet = workbook.active
 
-    # --- 공통 서식: 모든 셀 가운데 정렬 ---
+    # 공통 서식: 모든 셀 가운데 정렬
     center_alignment = Alignment(horizontal='center', vertical='center')
     for row in sheet.iter_rows():
         for cell in row:
             cell.alignment = center_alignment
 
-    # --- 파일별 특수 서식 ---
+    # 파일별 특수 서식
     for column_cells in sheet.columns:
         max_length = 0
-        column = column_cells.column_letter
+        column = column_cells[0].column_letter
         for cell in column_cells:
             try:
                 if cell.value:
@@ -102,6 +102,7 @@ def process_all_files(file1, file2, file3, df_master):
 
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
         
+        # <<-- 최종 수정: 고도몰 실결제금액 처리 로직 전면 수정 -->>
         last_col_name = df_godomall.columns[-1]
         df_godomall['수정될_금액_고도몰'] = pd.to_numeric(df_godomall[last_col_name].astype(str).str.replace(',', ''), errors='coerce')
         
@@ -110,10 +111,12 @@ def process_all_files(file1, file2, file3, df_master):
         key_cols_smartstore = ['재고관리코드', '주문수량', '수령자명']
         smartstore_prices = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})[key_cols_smartstore + ['수정될_금액_스토어']].drop_duplicates(subset=key_cols_smartstore, keep='first')
         
+        # <<-- 최종 수정: 고도몰 금액 보정을 위한 연결고리(Key) 변경 -->>
         key_cols_godomall = ['수취인 이름', '상품수량', '상품별 품목금액']
         godomall_prices_for_merge = df_godomall[key_cols_godomall + ['수정될_금액_고도몰']].rename(columns={'수취인 이름': '수령자명', '상품수량': '주문수량', '상품별 품목금액': '실결제금액'})
         godomall_prices_for_merge = godomall_prices_for_merge.drop_duplicates(subset=['수령자명', '주문수량', '실결제금액'], keep='first')
         
+        # 데이터 병합 전, 키로 사용될 열들의 데이터 타입을 통일 (공백 제거 포함)
         df_final['수령자명'] = df_final['수령자명'].astype(str).str.strip()
         df_final['주문수량'] = pd.to_numeric(df_final['주문수량'], errors='coerce').fillna(0).astype(int)
         df_final['실결제금액'] = pd.to_numeric(df_final['실결제금액'], errors='coerce').fillna(0).astype(int)
