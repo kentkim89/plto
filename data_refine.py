@@ -105,20 +105,34 @@ def process_all_files(file1, file2, file3, df_master):
 
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
 
+        # <<-- 최종 수정: 고도몰 실결제금액 직접 계산 -->>
+        # 필요한 모든 열을 숫자로 변환 (오류 발생 시 0으로 처리)
+        cols_to_numeric = ['상품별 품목금액', '총 배송 금액', '회 할인 금액', '쿠폰 할인 금액', '사용된 마일리지']
+        for col in cols_to_numeric:
+            df_godomall[col] = df_godomall[col].astype(str).str.replace(',', '')
+            df_godomall[col] = pd.to_numeric(df_godomall[col], errors='coerce').fillna(0)
+
+        df_godomall['수정될_금액_고도몰'] = (
+            df_godomall['상품별 품목금액'] + 
+            df_godomall['총 배송 금액'] - 
+            df_godomall['회 할인 금액'] - 
+            df_godomall['쿠폰 할인 금액'] - 
+            df_godomall['사용된 마일리지']
+        )
+        
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
         
         key_cols_smartstore = ['재고관리코드', '주문수량', '수령자명']
         smartstore_prices = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})[key_cols_smartstore + ['수정될_금액_스토어']].drop_duplicates(subset=key_cols_smartstore, keep='first')
         
-        godomall_prices = df_godomall.copy()
-        last_col_name = godomall_prices.columns[-1]
-        godomall_prices['수정될_금액_고도몰'] = pd.to_numeric(godomall_prices[last_col_name].astype(str).str.replace(',', ''), errors='coerce')
-        key_cols_godomall_orig = ['수취인 이름', '상품수량', '상품별 품목금액']
-        godomall_prices_for_merge = godomall_prices[key_cols_godomall_orig + ['수정될_금액_고도몰']].rename(columns={'수취인 이름': '수령자명', '상품수량': '주문수량', '상품별 품목금액': '실결제금액'}).drop_duplicates(subset=['수령자명', '주문수량', '실결제금액'], keep='first')
-        
+        # 고도몰 키 컬럼을 원본 주문 파일과 맞춤
+        key_cols_godomall = ['자체옵션코드', '상품수량', '수취인 이름']
+        godomall_prices_for_merge = df_godomall[key_cols_godomall + ['수정될_금액_고도몰']].rename(columns={'자체옵션코드': '재고관리코드', '상품수량': '주문수량', '수취인 이름': '수령자명'})
+        godomall_prices_for_merge = godomall_prices_for_merge.drop_duplicates(subset=['재고관리코드', '주문수량', '수령자명'], keep='first')
+
         df_final = pd.merge(df_final, smartstore_prices, on=key_cols_smartstore, how='left')
-        df_final = pd.merge(df_final, godomall_prices_for_merge, on=['수령자명', '주문수량', '실결제금액'], how='left')
-        
+        df_final = pd.merge(df_final, godomall_prices_for_merge, on=['재고관리코드', '주문수량', '수령자명'], how='left')
+
         warnings = [f"- [금액보정 실패] **{row['쇼핑몰']}** / {row['수령자명']} / {row['SKU상품명']}" for _, row in df_final[(df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna()) | (df_final['쇼핑몰'] == '고도몰5') & (df_final['수정될_금액_고도몰'].isna())].iterrows()]
         
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '고도몰5', df_final['수정될_금액_고도몰'].fillna(df_final['실결제금액']), df_final['실결제금액'])
