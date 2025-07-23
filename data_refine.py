@@ -69,6 +69,7 @@ def to_excel_formatted(df, format_type=None):
                                     sheet.cell(row=r, column=c).fill = pink_fill
                     
                     if bundle_start_row < bundle_end_row:
+                        # 묶음번호 및 수령자명 병합
                         sheet.merge_cells(start_row=bundle_start_row, start_column=1, end_row=bundle_end_row, end_column=1)
                         sheet.merge_cells(start_row=bundle_start_row, start_column=4, end_row=bundle_end_row, end_column=4)
                 
@@ -103,10 +104,19 @@ def process_all_files(file1, file2, file3, df_master):
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
         
         # <<-- 최종 수정: 고도몰 실결제금액 처리 로직 전면 수정 -->>
+        # 마지막 열을 실결제금액으로 사용
         last_col_name = df_godomall.columns[-1]
         df_godomall['수정될_금액_고도몰'] = pd.to_numeric(df_godomall[last_col_name].astype(str).str.replace(',', ''), errors='coerce')
         
+        # 병합 전 키 데이터 타입 통일 및 공백 제거
+        df_godomall['수취인 이름'] = df_godomall['수취인 이름'].str.strip()
+        df_godomall['상품수량'] = pd.to_numeric(df_godomall['상품수량'], errors='coerce').fillna(0).astype(int)
+        df_godomall['상품별 품목금액'] = pd.to_numeric(df_godomall['상품별 품목금액'], errors='coerce').fillna(0).astype(int)
+        
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
+        df_final['수령자명'] = df_final['수령자명'].str.strip()
+        df_final['주문수량'] = pd.to_numeric(df_final['주문수량'], errors='coerce').fillna(0).astype(int)
+        df_final['실결제금액'] = pd.to_numeric(df_final['실결제금액'], errors='coerce').fillna(0).astype(int)
         
         key_cols_smartstore = ['재고관리코드', '주문수량', '수령자명']
         smartstore_prices = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})[key_cols_smartstore + ['수정될_금액_스토어']].drop_duplicates(subset=key_cols_smartstore, keep='first')
