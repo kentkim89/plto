@@ -24,13 +24,11 @@ def to_excel_formatted(df, format_type=None):
     workbook = openpyxl.load_workbook(output)
     sheet = workbook.active
 
-    # --- 공통 서식: 모든 셀 가운데 정렬 ---
     center_alignment = Alignment(horizontal='center', vertical='center')
     for row in sheet.iter_rows():
         for cell in row:
             cell.alignment = center_alignment
 
-    # --- 파일별 특수 서식 ---
     for column_cells in sheet.columns:
         max_length = 0
         column = column_cells[0].column_letter
@@ -45,7 +43,7 @@ def to_excel_formatted(df, format_type=None):
         sheet.column_dimensions[column].width = adjusted_width
     
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
-    pink_fill = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid") # 연한 핑크
+    pink_fill = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid")
 
     if format_type == 'packing_list':
         for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=1, max_col=sheet.max_column):
@@ -54,10 +52,8 @@ def to_excel_formatted(df, format_type=None):
         
         bundle_start_row = 2
         for row_num in range(2, sheet.max_row + 2):
-            # 마지막 그룹 처리를 위해 루프를 한 번 더 실행
             current_bundle_cell = sheet.cell(row=row_num, column=1) if row_num <= sheet.max_row else None
             
-            # 새 묶음이 시작되거나, 마지막 행을 지난 경우 이전 그룹에 서식 적용
             if (current_bundle_cell and current_bundle_cell.value) or (row_num > sheet.max_row):
                 if row_num > 2:
                     bundle_end_row = row_num - 1
@@ -71,7 +67,6 @@ def to_excel_formatted(df, format_type=None):
                                     sheet.cell(row=r, column=c).fill = pink_fill
                     
                     if bundle_start_row < bundle_end_row:
-                        # 묶음번호 및 수령자명 병합
                         sheet.merge_cells(start_row=bundle_start_row, start_column=1, end_row=bundle_end_row, end_column=1)
                         sheet.merge_cells(start_row=bundle_start_row, start_column=4, end_row=bundle_end_row, end_column=4)
                 
@@ -104,21 +99,11 @@ def process_all_files(file1, file2, file3, df_master):
         df_godomall = pd.read_excel(file3)
 
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
-
-        # <<-- 최종 수정: 고도몰 실결제금액 직접 계산 -->>
-        # 필요한 모든 열을 숫자로 변환 (오류 발생 시 0으로 처리)
-        cols_to_numeric = ['상품별 품목금액', '총 배송 금액', '회 할인 금액', '쿠폰 할인 금액', '사용된 마일리지']
-        for col in cols_to_numeric:
-            df_godomall[col] = df_godomall[col].astype(str).str.replace(',', '')
-            df_godomall[col] = pd.to_numeric(df_godomall[col], errors='coerce').fillna(0)
-
-        df_godomall['수정될_금액_고도몰'] = (
-            df_godomall['상품별 품목금액'] + 
-            df_godomall['총 배송 금액'] - 
-            df_godomall['회 할인 금액'] - 
-            df_godomall['쿠폰 할인 금액'] - 
-            df_godomall['사용된 마일리지']
-        )
+        
+        # <<-- 최종 수정: 고도몰 실결제금액 로직 변경 -->>
+        # 마지막 열을 실결제금액으로 사용
+        last_col_name = df_godomall.columns[-1]
+        df_godomall['수정될_금액_고도몰'] = pd.to_numeric(df_godomall[last_col_name].astype(str).str.replace(',', ''), errors='coerce')
         
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
         
@@ -218,8 +203,8 @@ def process_all_files(file1, file2, file3, df_master):
 # --------------------------------------------------------------------------
 # Streamlit 앱 UI 구성
 # --------------------------------------------------------------------------
-st.set_page_config(page_title="주문 처리 자동화 v.Production-Ready", layout="wide")
-st.title("📑 주문 처리 자동화 (v.Production-Ready)")
+st.set_page_config(page_title="주문 처리 자동화 v.Final-Masterpiece", layout="wide")
+st.title("📑 주문 처리 자동화 (v.Final-Masterpiece)")
 st.info("💡 3개의 주문 관련 파일을 업로드하면, 금액 보정, 물류, ERP(이카운트)용 데이터가 한 번에 생성됩니다.")
 st.write("---")
 
