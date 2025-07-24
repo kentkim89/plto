@@ -101,6 +101,7 @@ def process_all_files(file1, file2, file3, df_master):
         df_smartstore = pd.read_excel(file1)
         df_ecount_orig = pd.read_excel(file2)
         df_godomall = pd.read_excel(file3)
+        df_godomall['자체옵션코드_orig'] = df_godomall['자체옵션코드'] # 실패 판별을 위해 원본 코드 보존
 
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
         
@@ -157,7 +158,7 @@ def process_all_files(file1, file2, file3, df_master):
         
         key_cols_godomall = ['자체옵션코드', '수취인 이름', '상품수량']
         godomall_prices_for_merge = df_godomall[
-            key_cols_godomall + ['안분된_품목금액']
+            key_cols_godomall + ['안분된_품목금액', '자체옵션코드_orig'] # 원본 코드도 함께 전달
         ].rename(columns={
             '자체옵션코드': '재고관리코드',
             '수취인 이름': '수령자명', 
@@ -174,20 +175,17 @@ def process_all_files(file1, file2, file3, df_master):
         merge_keys_godo = ['재고관리코드', '수령자명', '주문수량']
         df_final = pd.merge(df_final, smartstore_prices, on=key_cols_smartstore, how='left')
         df_final = pd.merge(df_final, godomall_prices_for_merge, on=merge_keys_godo, how='left')
-        
+
         # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 수정된 부분: 실패 조건 판별 로직 수정
+        # 수정된 부분: 실패 조건 판별 로직을 더욱 정교하게 변경
         # ----------------------------------------------------
-        # 실패 목록을 만들기 *전*에, 원본 가격이 0원이었던 항목들은 실패로 간주하지 않도록 조건을 추가합니다.
-        
-        # 스마트스토어 실패 조건
         failed_smartstore = (df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna())
         
-        # 고도몰 실패 조건: 병합 실패(안분금액 없음) AND 원본 가격이 0원이 아니었던 경우만 실패로 간주
+        # 고도몰 실패 조건: merge 실패 AND 고도몰 원본 파일에 코드가 있었던 경우에만 실패로 간주
         failed_godomall = (
             (df_final['쇼핑몰'] == '고도몰5') & 
             (df_final['안분된_품목금액'].isna()) & 
-            (df_final['실결제금액'] != 0) # '실결제금액'은 아직 이카운트 원본 금액임
+            (df_final['자체옵션코드_orig'].notna()) # 원본 코드가 NaN이 아니었을 때만 실패
         )
         
         failed_conditions = failed_smartstore | failed_godomall
@@ -200,7 +198,6 @@ def process_all_files(file1, file2, file3, df_master):
         ]
         warnings.extend(failed_corrections)
         
-        # 최종 실결제금액 업데이트
         df_final['실결제금액'] = np.where(
             (df_final['쇼핑몰'] == '고도몰5') & (df_final['안분된_품목금액'].notna()), 
             df_final['안분된_품목금액'], 
