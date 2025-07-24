@@ -6,8 +6,6 @@ import openpyxl
 from openpyxl.styles import PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
 from datetime import datetime
-from shareplum import Site
-from shareplum.site import Version
 
 # --------------------------------------------------------------------------
 # 함수 정의
@@ -26,25 +24,28 @@ def to_excel_formatted(df, format_type=None):
     workbook = openpyxl.load_workbook(output)
     sheet = workbook.active
 
+    # 공통 서식: 모든 셀 가운데 정렬
     center_alignment = Alignment(horizontal='center', vertical='center')
     for row in sheet.iter_rows():
         for cell in row:
             cell.alignment = center_alignment
 
+    # 파일별 특수 서식
     for column_cells in sheet.columns:
         max_length = 0
         column = column_cells[0].column_letter
         for cell in column_cells:
             try:
-                if cell.value and len(str(cell.value)) > max_length:
-                    max_length = len(str(cell.value))
+                if cell.value:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
             except:
                 pass
         adjusted_width = (max_length + 2) * 1.2
         sheet.column_dimensions[column].width = adjusted_width
     
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
-    pink_fill = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid")
+    pink_fill = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid") # 연한 핑크
 
     if format_type == 'packing_list':
         for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=1, max_col=sheet.max_column):
@@ -87,41 +88,11 @@ def to_excel_formatted(df, format_type=None):
     
     return final_output.getvalue()
 
-@st.cache_data(ttl=600) # 10분마다 캐시 갱신
-def load_sharepoint_excel_master_data():
-    """팀즈(SharePoint)에 있는 Excel 마스터 데이터를 로드하는 함수"""
-    try:
-        sp_user = st.secrets["sharepoint"]["username"]
-        sp_pass = st.secrets["sharepoint"]["password"]
-        sp_site_url = st.secrets["sharepoint"]["site_url"]
-        
-        auth = (sp_user, sp_pass)
-        site = Site(sp_site_url, version=Version.v365, auth=auth)
-        
-        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 🔑 알려주신 경로를 정확하게 입력합니다.
-        # 'Shared Documents' 라이브러리 안의 '[DB] 데이터베이스' 폴더를 의미합니다.
-        folder_path = 'Shared Documents/[DB] 데이터베이스'
-        folder = site.Folder(folder_path) 
-        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-        
-        # 파일명을 정확하게 지정합니다.
-        file_name = 'master_data.xlsx'
-        file_content = folder.get_file(file_name)
-        
-        excel_file = io.BytesIO(file_content)
-        df_master = pd.read_excel(excel_file, engine='openpyxl')
-        
-        df_master = df_master.drop_duplicates(subset=['SKU코드'], keep='first')
-        
-        st.success(f"✅ 마스터 데이터를 SharePoint '{folder_path}' 폴더에서 성공적으로 불러왔습니다.")
-        return df_master
-
-    except Exception as e:
-        st.error(f"🚨 SharePoint 마스터 데이터 로딩 실패: {e}")
-        st.warning("`.streamlit/secrets.toml` 파일과 코드의 경로/파일명이 올바른지 다시 확인해주세요.")
-        # MFA(다단계 인증)를 사용하는 경우, 일반 비밀번호 대신 '앱 암호'를 사용해야 할 수 있습니다.
-        return None
+@st.cache_data
+def load_local_master_data(file_path="master_data.csv"):
+    df_master = pd.read_csv(file_path)
+    df_master = df_master.drop_duplicates(subset=['SKU코드'], keep='first')
+    return df_master
 
 def process_all_files(file1, file2, file3, df_master):
     try:
@@ -149,13 +120,16 @@ def process_all_files(file1, file2, file3, df_master):
         godomall_prices_for_merge = df_godomall[key_cols_godomall + ['수정될_금액_고도몰']].rename(columns={'수취인 이름': '수령자명', '상품수량': '주문수량', '상품별 품목금액': '실결제금액'})
         godomall_prices_for_merge = godomall_prices_for_merge.drop_duplicates(subset=['수령자명', '주문수량', '실결제금액'], keep='first')
         
-        for df in [df_final, smartstore_prices, godomall_prices_for_merge]:
-            if '수령자명' in df.columns:
-                df['수령자명'] = df['수령자명'].astype(str).str.strip()
-            if '주문수량' in df.columns:
-                df['주문수량'] = pd.to_numeric(df['주문수량'], errors='coerce').fillna(0).astype(int)
-            if '실결제금액' in df.columns:
-                 df['실결제금액'] = pd.to_numeric(df['실결제금액'], errors='coerce').fillna(0).astype(int)
+        df_final['수령자명'] = df_final['수령자명'].astype(str).str.strip()
+        df_final['주문수량'] = pd.to_numeric(df_final['주문수량'], errors='coerce').fillna(0).astype(int)
+        df_final['실결제금액'] = pd.to_numeric(df_final['실결제금액'], errors='coerce').fillna(0).astype(int)
+        
+        smartstore_prices['수령자명'] = smartstore_prices['수령자명'].astype(str).str.strip()
+        smartstore_prices['주문수량'] = pd.to_numeric(smartstore_prices['주문수량'], errors='coerce').fillna(0).astype(int)
+        
+        godomall_prices_for_merge['수령자명'] = godomall_prices_for_merge['수령자명'].astype(str).str.strip()
+        godomall_prices_for_merge['주문수량'] = pd.to_numeric(godomall_prices_for_merge['주문수량'], errors='coerce').fillna(0).astype(int)
+        godomall_prices_for_merge['실결제금액'] = pd.to_numeric(godomall_prices_for_merge['실결제금액'], errors='coerce').fillna(0).astype(int)
 
         df_final = pd.merge(df_final, smartstore_prices, on=key_cols_smartstore, how='left')
         df_final = pd.merge(df_final, godomall_prices_for_merge, on=['수령자명', '주문수량', '실결제금액'], how='left')
@@ -188,6 +162,8 @@ def process_all_files(file1, file2, file3, df_master):
         for _, row in unmastered.iterrows():
             warnings.append(f"- [미등록 상품] **{row['재고관리코드']}** / {row['SKU상품명']}")
 
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        # 수정된 부분 1: 신규 거래처 매핑 추가
         client_map = {
             '쿠팡': '쿠팡 주식회사', 
             '고도몰5': '고래미자사몰_현금영수증(고도몰)', 
@@ -195,8 +171,10 @@ def process_all_files(file1, file2, file3, df_master):
             '배민상회': '주식회사 우아한형제들(배민상회)',
             '이지웰몰': '주식회사 현대이지웰'
         }
+        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         df_ecount_upload = pd.DataFrame()
+        
         df_ecount_upload['일자'] = datetime.now().strftime("%Y%m%d")
         df_ecount_upload['거래처명'] = df_merged['쇼핑몰'].map(client_map).fillna(df_merged['쇼핑몰'])
         df_ecount_upload['출하창고'] = '고래미'
@@ -235,10 +213,16 @@ def process_all_files(file1, file2, file3, df_master):
         
         df_ecount_upload['거래유형'] = pd.to_numeric(df_ecount_upload['거래유형'])
         
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        # 수정된 부분 2: 신규 거래처 정렬 순서에 추가
         sort_order = [
-            '고래미자사몰_현금영수증(고도몰)', '스토어팜', '쿠팡 주식회사',
-            '주식회사 우아한형제들(배민상회)', '주식회사 현대이지웰'
+            '고래미자사몰_현금영수증(고도몰)', 
+            '스토어팜', 
+            '쿠팡 주식회사',
+            '주식회사 우아한형제들(배민상회)',
+            '주식회사 현대이지웰'
         ]
+        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         df_ecount_upload['거래처명_sort'] = pd.Categorical(df_ecount_upload['거래처명'], categories=sort_order, ordered=True)
         
@@ -278,11 +262,9 @@ st.write("---")
 st.header("2. 처리 결과 확인 및 다운로드")
 if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
     if file1 and file2 and file3:
-        # SharePoint에서 마스터 데이터 로드
-        df_master = load_sharepoint_excel_master_data()
-        
-        # 마스터 데이터가 정상적으로 로드되었는지 확인 후 다음 단계 진행
-        if df_master is not None:
+        try:
+            df_master = load_local_master_data("master_data.csv")
+            
             with st.spinner('모든 파일을 읽고 데이터를 처리하며 엑셀 서식을 적용 중입니다...'):
                 df_main, df_qty, df_pack, df_ecount, success, message, warnings = process_all_files(file1, file2, file3, df_master)
             
@@ -316,5 +298,11 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
                     st.download_button("📥 다운로드", to_excel_formatted(df_main), f"최종_실결제금액_보정완료_{timestamp}.xlsx")
             else:
                 st.error(message)
+        
+        except FileNotFoundError:
+            st.error("🚨 치명적 오류: `master_data.csv` 파일을 찾을 수 없습니다! `app.py`와 동일한 폴더에 파일이 있는지 반드시 확인해주세요.")
+        except Exception as e:
+            st.error(f"🚨 상품 마스터 파일을 읽는 중 예상치 못한 오류가 발생했습니다: {e}")
+
     else:
         st.warning("⚠️ 3개의 엑셀 파일을 모두 업로드해야 실행할 수 있습니다.")
