@@ -98,23 +98,29 @@ def load_sharepoint_excel_master_data():
         auth = (sp_user, sp_pass)
         site = Site(sp_site_url, version=Version.v365, auth=auth)
         
-        # '일반' 채널의 경우 'Shared Documents/General' 입니다.
-        # 다른 채널인 경우 'General'을 실제 채널 이름으로 변경하세요.
-        folder = site.Folder('Shared Documents/General') 
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        # 🔑 알려주신 경로를 정확하게 입력합니다.
+        # 'Shared Documents' 라이브러리 안의 '[DB] 데이터베이스' 폴더를 의미합니다.
+        folder_path = 'Shared Documents/[DB] 데이터베이스'
+        folder = site.Folder(folder_path) 
+        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
-        file_content = folder.get_file('master_data.xlsx')
+        # 파일명을 정확하게 지정합니다.
+        file_name = 'master_data.xlsx'
+        file_content = folder.get_file(file_name)
         
         excel_file = io.BytesIO(file_content)
         df_master = pd.read_excel(excel_file, engine='openpyxl')
         
         df_master = df_master.drop_duplicates(subset=['SKU코드'], keep='first')
         
-        st.success("✅ 마스터 데이터를 SharePoint에서 성공적으로 불러왔습니다.")
+        st.success(f"✅ 마스터 데이터를 SharePoint '{folder_path}' 폴더에서 성공적으로 불러왔습니다.")
         return df_master
 
     except Exception as e:
         st.error(f"🚨 SharePoint 마스터 데이터 로딩 실패: {e}")
-        st.warning("`.streamlit/secrets.toml` 파일의 인증 정보, SharePoint 사이트 URL, 채널 경로, 파일명을 확인해주세요.")
+        st.warning("`.streamlit/secrets.toml` 파일과 코드의 경로/파일명이 올바른지 다시 확인해주세요.")
+        # MFA(다단계 인증)를 사용하는 경우, 일반 비밀번호 대신 '앱 암호'를 사용해야 할 수 있습니다.
         return None
 
 def process_all_files(file1, file2, file3, df_master):
