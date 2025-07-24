@@ -96,15 +96,57 @@ def load_local_master_data(file_path="master_data.csv"):
 
 def process_all_files(file1, file2, file3, df_master):
     try:
+        # 함수 시작 시점에 경고 리스트를 초기화합니다.
+        warnings = []
+
         df_smartstore = pd.read_excel(file1)
         df_ecount_orig = pd.read_excel(file2)
         df_godomall = pd.read_excel(file3)
 
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
         
-        cols_to_numeric = ['상품별 품목금액', '총 배송 금액', '회 할인 금액', '쿠폰 할인 금액', '사용된 마일리지']
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        # 수정된 부분 1: 고도몰 금액 검증 및 경고 기능 추가
+        # ----------------------------------------------------
+        
+        # 먼저 숫자형으로 변환할 컬럼들을 지정합니다. '총 결제 금액'도 포함시킵니다.
+        cols_to_numeric = [
+            '상품별 품목금액', '총 배송 금액', '회 할인 금액', '쿠폰 할인 금액', 
+            '사용된 마일리지', '총 결제 금액'
+        ]
         for col in cols_to_numeric:
             df_godomall[col] = pd.to_numeric(df_godomall[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+        
+        # '수취인 이름'과 '총 결제 금액'을 기준으로 주문 그룹을 식별합니다.
+        # 동일한 주문은 이 두 값이 같다는 점을 이용합니다.
+        order_groups = df_godomall.groupby(['수취인 이름', '총 결제 금액'])
+
+        for (name, reported_total), group in order_groups:
+            # 그룹 내에서 수식을 기반으로 결제 금액을 직접 계산합니다.
+            calculated_item_price = group['상품별 품목금액'].sum()
+            
+            # 배송비, 할인은 주문 단위이므로 그룹의 첫 번째 값을 사용합니다.
+            shipping_cost = group['총 배송 금액'].iloc[0]
+            member_discount = group['회 할인 금액'].iloc[0]
+            coupon_discount = group['쿠폰 할인 금액'].iloc[0]
+            mileage_used = group['사용된 마일리지'].iloc[0]
+
+            calculated_total = (
+                calculated_item_price + shipping_cost - 
+                member_discount - coupon_discount - mileage_used
+            )
+
+            # 계산된 금액과 파일상의 금액이 다른 경우, 경고 메시지를 추가합니다.
+            discrepancy = round(calculated_total) - round(reported_total)
+            if discrepancy != 0:
+                warning_msg = (
+                    f"- [고도몰 금액 오차] **{name}** 님의 주문에서 **{int(discrepancy)}원**의 오차가 발생했습니다. "
+                    f"(계산된 금액: {int(round(calculated_total))}원, 파일상 금액: {int(round(reported_total))}원)"
+                )
+                warnings.append(warning_msg)
+
+        # ----------------------------------------------------
+        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         df_godomall['수정될_금액_고도몰'] = (
             df_godomall['상품별 품목금액'] + df_godomall['총 배송 금액'] - df_godomall['회 할인 금액'] - 
@@ -134,7 +176,17 @@ def process_all_files(file1, file2, file3, df_master):
         df_final = pd.merge(df_final, smartstore_prices, on=key_cols_smartstore, how='left')
         df_final = pd.merge(df_final, godomall_prices_for_merge, on=['수령자명', '주문수량', '실결제금액'], how='left')
 
-        warnings = [f"- [금액보정 실패] **{row['쇼핑몰']}** / {row['수령자명']} / {row['SKU상품명']}" for _, row in df_final[(df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna()) | (df_final['쇼핑몰'] == '고도몰5') & (df_final['수정될_금액_고도몰'].isna())].iterrows()]
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        # 수정된 부분 2: 기존 경고 메시지를 덮어쓰지 않고 extend로 추가
+        failed_corrections = [
+            f"- [금액보정 실패] **{row['쇼핑몰']}** / {row['수령자명']} / {row['SKU상품명']}" 
+            for _, row in df_final[
+                (df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna()) | 
+                (df_final['쇼핑몰'] == '고도몰5') & (df_final['수정될_금액_고도몰'].isna())
+            ].iterrows()
+        ]
+        warnings.extend(failed_corrections)
+        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '고도몰5', df_final['수정될_금액_고도몰'].fillna(df_final['실결제금액']), df_final['실결제금액'])
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '스마트스토어', df_final['수정될_금액_스토어'].fillna(df_final['실결제금액']), df_final['실결제금액'])
@@ -161,9 +213,7 @@ def process_all_files(file1, file2, file3, df_master):
         unmastered = df_merged[df_merged['SKU코드'].isna()]
         for _, row in unmastered.iterrows():
             warnings.append(f"- [미등록 상품] **{row['재고관리코드']}** / {row['SKU상품명']}")
-
-        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 수정된 부분 1: 신규 거래처 매핑 추가
+        
         client_map = {
             '쿠팡': '쿠팡 주식회사', 
             '고도몰5': '고래미자사몰_현금영수증(고도몰)', 
@@ -171,7 +221,6 @@ def process_all_files(file1, file2, file3, df_master):
             '배민상회': '주식회사 우아한형제들(배민상회)',
             '이지웰몰': '주식회사 현대이지웰'
         }
-        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         df_ecount_upload = pd.DataFrame()
         
@@ -213,8 +262,6 @@ def process_all_files(file1, file2, file3, df_master):
         
         df_ecount_upload['거래유형'] = pd.to_numeric(df_ecount_upload['거래유형'])
         
-        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 수정된 부분 2: 신규 거래처 정렬 순서에 추가
         sort_order = [
             '고래미자사몰_현금영수증(고도몰)', 
             '스토어팜', 
@@ -222,7 +269,6 @@ def process_all_files(file1, file2, file3, df_master):
             '주식회사 우아한형제들(배민상회)',
             '주식회사 현대이지웰'
         ]
-        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         df_ecount_upload['거래처명_sort'] = pd.Categorical(df_ecount_upload['거래처명'], categories=sort_order, ordered=True)
         
