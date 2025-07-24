@@ -105,13 +105,11 @@ def process_all_files(file1, file2, file3, df_master):
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
         
         # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 수정된 부분 1: 고도몰 데이터 처리 로직 강화
+        # 수정된 부분: 계산 로직 변경 (할인/마일리지는 sum, 배송비는 max)
         # ----------------------------------------------------
         
-        # 1. 컬럼명 유연성 확보 ('회 할인 금액' 또는 '회원 할인 금액')
         member_discount_col = '회원 할인 금액' if '회원 할인 금액' in df_godomall.columns else '회 할인 금액'
-
-        # 2. '원' 문자 및 ','를 제거하는 클리닝 기능 강화
+        
         cols_to_numeric = [
             '상품별 품목금액', '총 배송 금액', member_discount_col, '쿠폰 할인 금액', 
             '사용된 마일리지', '총 결제 금액'
@@ -123,16 +121,16 @@ def process_all_files(file1, file2, file3, df_master):
                     errors='coerce'
                 ).fillna(0)
         
-        # 3. 주문 단위 금액 오차 검증 (수취인, 총결제금액 기준)
-        # .max()를 사용하여 주문 당 한 번만 적용되는 배송비, 할인 등을 정확히 계산
+        # 금액 오차 검증 로직 수정
         order_groups = df_godomall.groupby(['수취인 이름', '총 결제 금액'])
         for (name, reported_total), group in order_groups:
+            # 배송비는 max(), 할인/마일리지는 sum()으로 계산
             calculated_total = (
-                group['상품별 품목금액'].sum() + 
-                group['총 배송 금액'].max() - 
-                group[member_discount_col].max() - 
-                group['쿠폰 할인 금액'].max() - 
-                group['사용된 마일리지'].max()
+                group['상품별 품목금액'].sum() +
+                group['총 배송 금액'].max() -
+                group[member_discount_col].sum() -
+                group['쿠폰 할인 금액'].sum() -
+                group['사용된 마일리지'].sum()
             )
             discrepancy = round(calculated_total) - round(reported_total)
             if discrepancy != 0:
@@ -141,15 +139,14 @@ def process_all_files(file1, file2, file3, df_master):
                     f"(계산된 금액: {int(round(calculated_total))}원, 파일상 금액: {int(round(reported_total))}원)"
                 )
         
-        # 4. 주문 단위의 최종 결제 금액을 계산하여 '수정될_금액_고도몰' 컬럼 생성
-        # groupby().transform()을 사용하여 각 상품 라인에 해당 주문의 '전체' 결제 금액을 매핑
+        # '수정될_금액_고도몰' 생성 로직 수정
         godo_order_groups = df_godomall.groupby(['수취인 이름', '총 결제 금액'])
         df_godomall['수정될_금액_고도몰'] = (
             godo_order_groups['상품별 품목금액'].transform('sum') +
             godo_order_groups['총 배송 금액'].transform('max') -
-            godo_order_groups[member_discount_col].transform('max') -
-            godo_order_groups['쿠폰 할인 금액'].transform('max') -
-            godo_order_groups['사용된 마일리지'].transform('max')
+            godo_order_groups[member_discount_col].transform('sum') -
+            godo_order_groups['쿠폰 할인 금액'].transform('sum') -
+            godo_order_groups['사용된 마일리지'].transform('sum')
         )
         # ----------------------------------------------------
         # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
