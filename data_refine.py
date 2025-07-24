@@ -155,19 +155,15 @@ def process_all_files(file1, file2, file3, df_master):
         key_cols_smartstore = ['재고관리코드', '주문수량', '수령자명']
         smartstore_prices = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})[key_cols_smartstore + ['수정될_금액_스토어']].drop_duplicates(subset=key_cols_smartstore, keep='first')
         
-        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 수정된 부분: merge 키에서 '실결제금액'을 빼고 '재고관리코드'를 추가
-        # ----------------------------------------------------
         key_cols_godomall = ['자체옵션코드', '수취인 이름', '상품수량']
         godomall_prices_for_merge = df_godomall[
             key_cols_godomall + ['안분된_품목금액']
         ].rename(columns={
-            '자체옵션코드': '재고관리코드', # merge를 위해 컬럼명 통일
+            '자체옵션코드': '재고관리코드',
             '수취인 이름': '수령자명', 
             '상품수량': '주문수량'
         })
         
-        # 데이터 타입 정리
         for df in [df_final, smartstore_prices, godomall_prices_for_merge]:
             for col, type_ in {'수령자명': str, '주문수량': int}.items():
                  if col in df.columns:
@@ -175,13 +171,35 @@ def process_all_files(file1, file2, file3, df_master):
             if '재고관리코드' in df.columns:
                 df['재고관리코드'] = df['재고관리코드'].astype(str).str.strip()
 
-        # 데이터 병합 (수정된 키 사용)
         merge_keys_godo = ['재고관리코드', '수령자명', '주문수량']
         df_final = pd.merge(df_final, smartstore_prices, on=key_cols_smartstore, how='left')
         df_final = pd.merge(df_final, godomall_prices_for_merge, on=merge_keys_godo, how='left')
+        
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        # 수정된 부분: 실패 조건 판별 로직 수정
+        # ----------------------------------------------------
+        # 실패 목록을 만들기 *전*에, 원본 가격이 0원이었던 항목들은 실패로 간주하지 않도록 조건을 추가합니다.
+        
+        # 스마트스토어 실패 조건
+        failed_smartstore = (df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna())
+        
+        # 고도몰 실패 조건: 병합 실패(안분금액 없음) AND 원본 가격이 0원이 아니었던 경우만 실패로 간주
+        failed_godomall = (
+            (df_final['쇼핑몰'] == '고도몰5') & 
+            (df_final['안분된_품목금액'].isna()) & 
+            (df_final['실결제금액'] != 0) # '실결제금액'은 아직 이카운트 원본 금액임
+        )
+        
+        failed_conditions = failed_smartstore | failed_godomall
         # ----------------------------------------------------
         # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-
+        
+        failed_corrections = [
+            f"- [금액보정 실패] **{row['쇼핑몰']}** / {row['수령자명']} / {row['SKU상품명']}" 
+            for _, row in df_final[failed_conditions].iterrows()
+        ]
+        warnings.extend(failed_corrections)
+        
         # 최종 실결제금액 업데이트
         df_final['실결제금액'] = np.where(
             (df_final['쇼핑몰'] == '고도몰5') & (df_final['안분된_품목금액'].notna()), 
@@ -193,16 +211,6 @@ def process_all_files(file1, file2, file3, df_master):
             df_final['수정될_금액_스토어'], 
             df_final['실결제금액']
         )
-        
-        failed_conditions = (
-            (df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna()) | 
-            (df_final['쇼핑몰'] == '고도몰5') & (df_final['안분된_품목금액'].isna())
-        )
-        failed_corrections = [
-            f"- [금액보정 실패] **{row['쇼핑몰']}** / {row['수령자명']} / {row['SKU상품명']}" 
-            for _, row in df_final[failed_conditions].iterrows()
-        ]
-        warnings.extend(failed_corrections)
         
         df_main_result = df_final[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명', 'original_order']]
         
