@@ -96,7 +96,6 @@ def load_local_master_data(file_path="master_data.csv"):
 
 def process_all_files(file1, file2, file3, df_master):
     try:
-        # 함수 시작 시점에 경고 리스트를 초기화합니다.
         warnings = []
 
         df_smartstore = pd.read_excel(file1)
@@ -106,52 +105,54 @@ def process_all_files(file1, file2, file3, df_master):
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
         
         # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 수정된 부분 1: 고도몰 금액 검증 및 경고 기능 추가
+        # 수정된 부분 1: 고도몰 데이터 처리 로직 강화
         # ----------------------------------------------------
         
-        # 먼저 숫자형으로 변환할 컬럼들을 지정합니다. '총 결제 금액'도 포함시킵니다.
+        # 1. 컬럼명 유연성 확보 ('회 할인 금액' 또는 '회원 할인 금액')
+        member_discount_col = '회원 할인 금액' if '회원 할인 금액' in df_godomall.columns else '회 할인 금액'
+
+        # 2. '원' 문자 및 ','를 제거하는 클리닝 기능 강화
         cols_to_numeric = [
-            '상품별 품목금액', '총 배송 금액', '회 할인 금액', '쿠폰 할인 금액', 
+            '상품별 품목금액', '총 배송 금액', member_discount_col, '쿠폰 할인 금액', 
             '사용된 마일리지', '총 결제 금액'
         ]
         for col in cols_to_numeric:
-            df_godomall[col] = pd.to_numeric(df_godomall[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+            if col in df_godomall.columns:
+                df_godomall[col] = pd.to_numeric(
+                    df_godomall[col].astype(str).str.replace('원', '').str.replace(',', ''), 
+                    errors='coerce'
+                ).fillna(0)
         
-        # '수취인 이름'과 '총 결제 금액'을 기준으로 주문 그룹을 식별합니다.
-        # 동일한 주문은 이 두 값이 같다는 점을 이용합니다.
+        # 3. 주문 단위 금액 오차 검증 (수취인, 총결제금액 기준)
+        # .max()를 사용하여 주문 당 한 번만 적용되는 배송비, 할인 등을 정확히 계산
         order_groups = df_godomall.groupby(['수취인 이름', '총 결제 금액'])
-
         for (name, reported_total), group in order_groups:
-            # 그룹 내에서 수식을 기반으로 결제 금액을 직접 계산합니다.
-            calculated_item_price = group['상품별 품목금액'].sum()
-            
-            # 배송비, 할인은 주문 단위이므로 그룹의 첫 번째 값을 사용합니다.
-            shipping_cost = group['총 배송 금액'].iloc[0]
-            member_discount = group['회 할인 금액'].iloc[0]
-            coupon_discount = group['쿠폰 할인 금액'].iloc[0]
-            mileage_used = group['사용된 마일리지'].iloc[0]
-
             calculated_total = (
-                calculated_item_price + shipping_cost - 
-                member_discount - coupon_discount - mileage_used
+                group['상품별 품목금액'].sum() + 
+                group['총 배송 금액'].max() - 
+                group[member_discount_col].max() - 
+                group['쿠폰 할인 금액'].max() - 
+                group['사용된 마일리지'].max()
             )
-
-            # 계산된 금액과 파일상의 금액이 다른 경우, 경고 메시지를 추가합니다.
             discrepancy = round(calculated_total) - round(reported_total)
             if discrepancy != 0:
-                warning_msg = (
+                warnings.append(
                     f"- [고도몰 금액 오차] **{name}** 님의 주문에서 **{int(discrepancy)}원**의 오차가 발생했습니다. "
                     f"(계산된 금액: {int(round(calculated_total))}원, 파일상 금액: {int(round(reported_total))}원)"
                 )
-                warnings.append(warning_msg)
-
+        
+        # 4. 주문 단위의 최종 결제 금액을 계산하여 '수정될_금액_고도몰' 컬럼 생성
+        # groupby().transform()을 사용하여 각 상품 라인에 해당 주문의 '전체' 결제 금액을 매핑
+        godo_order_groups = df_godomall.groupby(['수취인 이름', '총 결제 금액'])
+        df_godomall['수정될_금액_고도몰'] = (
+            godo_order_groups['상품별 품목금액'].transform('sum') +
+            godo_order_groups['총 배송 금액'].transform('max') -
+            godo_order_groups[member_discount_col].transform('max') -
+            godo_order_groups['쿠폰 할인 금액'].transform('max') -
+            godo_order_groups['사용된 마일리지'].transform('max')
+        )
         # ----------------------------------------------------
         # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-        
-        df_godomall['수정될_금액_고도몰'] = (
-            df_godomall['상품별 품목금액'] + df_godomall['총 배송 금액'] - df_godomall['회 할인 금액'] - 
-            df_godomall['쿠폰 할인 금액'] - df_godomall['사용된 마일리지']
-        )
         
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
         
@@ -176,8 +177,6 @@ def process_all_files(file1, file2, file3, df_master):
         df_final = pd.merge(df_final, smartstore_prices, on=key_cols_smartstore, how='left')
         df_final = pd.merge(df_final, godomall_prices_for_merge, on=['수령자명', '주문수량', '실결제금액'], how='left')
 
-        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 수정된 부분 2: 기존 경고 메시지를 덮어쓰지 않고 extend로 추가
         failed_corrections = [
             f"- [금액보정 실패] **{row['쇼핑몰']}** / {row['수령자명']} / {row['SKU상품명']}" 
             for _, row in df_final[
@@ -186,7 +185,6 @@ def process_all_files(file1, file2, file3, df_master):
             ].iterrows()
         ]
         warnings.extend(failed_corrections)
-        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '고도몰5', df_final['수정될_금액_고도몰'].fillna(df_final['실결제금액']), df_final['실결제금액'])
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '스마트스토어', df_final['수정될_금액_스토어'].fillna(df_final['실결제금액']), df_final['실결제금액'])
