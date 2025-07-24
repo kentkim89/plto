@@ -105,7 +105,7 @@ def process_all_files(file1, file2, file3, df_master):
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
         
         # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 수정된 부분: 계산 로직 변경 (할인/마일리지는 sum, 배송비는 max)
+        # 수정된 부분: 품목별 결제금액 안분 로직 추가
         # ----------------------------------------------------
         
         member_discount_col = '회원 할인 금액' if '회원 할인 금액' in df_godomall.columns else '회 할인 금액'
@@ -121,15 +121,13 @@ def process_all_files(file1, file2, file3, df_master):
                     errors='coerce'
                 ).fillna(0)
         
-        # 금액 오차 검증 로직 수정
-        order_groups = df_godomall.groupby(['수취인 이름', '총 결제 금액'])
-        for (name, reported_total), group in order_groups:
-            # 배송비는 max(), 할인/마일리지는 sum()으로 계산
+        godo_order_groups = df_godomall.groupby(['수취인 이름', '총 결제 금액'])
+        
+        # 1. 주문 그룹별 금액 오차 검증 (기존 로직 유지)
+        for (name, reported_total), group in godo_order_groups:
             calculated_total = (
-                group['상품별 품목금액'].sum() +
-                group['총 배송 금액'].max() -
-                group[member_discount_col].sum() -
-                group['쿠폰 할인 금액'].sum() -
+                group['상품별 품목금액'].sum() + group['총 배송 금액'].max() -
+                group[member_discount_col].sum() - group['쿠폰 할인 금액'].sum() -
                 group['사용된 마일리지'].sum()
             )
             discrepancy = round(calculated_total) - round(reported_total)
@@ -139,55 +137,82 @@ def process_all_files(file1, file2, file3, df_master):
                     f"(계산된 금액: {int(round(calculated_total))}원, 파일상 금액: {int(round(reported_total))}원)"
                 )
         
-        # '수정될_금액_고도몰' 생성 로직 수정
-        godo_order_groups = df_godomall.groupby(['수취인 이름', '총 결제 금액'])
-        df_godomall['수정될_금액_고도몰'] = (
-            godo_order_groups['상품별 품목금액'].transform('sum') +
-            godo_order_groups['총 배송 금액'].transform('max') -
-            godo_order_groups[member_discount_col].transform('sum') -
-            godo_order_groups['쿠폰 할인 금액'].transform('sum') -
-            godo_order_groups['사용된 마일리지'].transform('sum')
+        # 2. 주문 그룹별 실제 결제 총액 계산
+        final_order_total = godo_order_groups.transform(
+            lambda x: x.sum() if x.name in [member_discount_col, '쿠폰 할인 금액', '사용된 마일리지', '상품별 품목금액'] else x.max()
         )
+        df_godomall['수정될_금액_고도몰'] = (
+            final_order_total['상품별 품목금액'] + final_order_total['총 배송 금액'] -
+            final_order_total[member_discount_col] - final_order_total['쿠폰 할인 금액'] -
+            final_order_total['사용된 마일리지']
+        )
+        
+        # 3. 품목별로 결제 금액을 안분(비례 배분)
+        total_original_price = godo_order_groups['상품별 품목금액'].transform('sum')
+        # 0으로 나누는 오류 방지
+        payment_ratio = np.where(
+            total_original_price > 0, 
+            df_godomall['수정될_금액_고도몰'] / total_original_price, 
+            0
+        )
+        df_godomall['안분된_품목금액'] = df_godomall['상품별 품목금액'] * payment_ratio
+        
         # ----------------------------------------------------
         # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
         
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
         
+        # 스마트스토어 금액 보정 데이터 준비
         key_cols_smartstore = ['재고관리코드', '주문수량', '수령자명']
         smartstore_prices = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})[key_cols_smartstore + ['수정될_금액_스토어']].drop_duplicates(subset=key_cols_smartstore, keep='first')
         
+        # 고도몰 금액 보정 데이터 준비 (안분된 금액 추가)
         key_cols_godomall = ['수취인 이름', '상품수량', '상품별 품목금액']
-        godomall_prices_for_merge = df_godomall[key_cols_godomall + ['수정될_금액_고도몰']].rename(columns={'수취인 이름': '수령자명', '상품수량': '주문수량', '상품별 품목금액': '실결제금액'})
+        godomall_prices_for_merge = df_godomall[
+            key_cols_godomall + ['안분된_품목금액']
+        ].rename(columns={
+            '수취인 이름': '수령자명', 
+            '상품수량': '주문수량', 
+            '상품별 품목금액': '실결제금액'
+        })
         godomall_prices_for_merge = godomall_prices_for_merge.drop_duplicates(subset=['수령자명', '주문수량', '실결제금액'], keep='first')
-        
-        df_final['수령자명'] = df_final['수령자명'].astype(str).str.strip()
-        df_final['주문수량'] = pd.to_numeric(df_final['주문수량'], errors='coerce').fillna(0).astype(int)
-        df_final['실결제금액'] = pd.to_numeric(df_final['실결제금액'], errors='coerce').fillna(0).astype(int)
-        
-        smartstore_prices['수령자명'] = smartstore_prices['수령자명'].astype(str).str.strip()
-        smartstore_prices['주문수량'] = pd.to_numeric(smartstore_prices['주문수량'], errors='coerce').fillna(0).astype(int)
-        
-        godomall_prices_for_merge['수령자명'] = godomall_prices_for_merge['수령자명'].astype(str).str.strip()
-        godomall_prices_for_merge['주문수량'] = pd.to_numeric(godomall_prices_for_merge['주문수량'], errors='coerce').fillna(0).astype(int)
-        godomall_prices_for_merge['실결제금액'] = pd.to_numeric(godomall_prices_for_merge['실결제금액'], errors='coerce').fillna(0).astype(int)
 
+        # 데이터 타입 정리
+        for df in [df_final, smartstore_prices, godomall_prices_for_merge]:
+            for col, type_ in {'수령자명': str, '주문수량': int, '실결제금액': int}.items():
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.strip() if type_ == str else pd.to_numeric(df[col], errors='coerce').fillna(0).astype(type_)
+
+        # 데이터 병합
         df_final = pd.merge(df_final, smartstore_prices, on=key_cols_smartstore, how='left')
         df_final = pd.merge(df_final, godomall_prices_for_merge, on=['수령자명', '주문수량', '실결제금액'], how='left')
 
+        # 최종 실결제금액 업데이트 (고도몰은 안분된 금액, 스토어는 보정된 금액 사용)
+        df_final['실결제금액'] = np.where(
+            (df_final['쇼핑몰'] == '고도몰5') & (df_final['안분된_품목금액'].notna()), 
+            df_final['안분된_품목금액'], 
+            df_final['실결제금액']
+        )
+        df_final['실결제금액'] = np.where(
+            (df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].notna()), 
+            df_final['수정될_금액_스토어'], 
+            df_final['실결제금액']
+        )
+        
+        # 금액 보정 실패 경고
+        failed_conditions = (
+            (df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna()) | 
+            (df_final['쇼핑몰'] == '고도몰5') & (df_final['안분된_품목금액'].isna())
+        )
         failed_corrections = [
             f"- [금액보정 실패] **{row['쇼핑몰']}** / {row['수령자명']} / {row['SKU상품명']}" 
-            for _, row in df_final[
-                (df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna()) | 
-                (df_final['쇼핑몰'] == '고도몰5') & (df_final['수정될_금액_고도몰'].isna())
-            ].iterrows()
+            for _, row in df_final[failed_conditions].iterrows()
         ]
         warnings.extend(failed_corrections)
         
-        df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '고도몰5', df_final['수정될_금액_고도몰'].fillna(df_final['실결제금액']), df_final['실결제금액'])
-        df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '스마트스토어', df_final['수정될_금액_스토어'].fillna(df_final['실결제금액']), df_final['실결제금액'])
-        
         df_main_result = df_final[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명', 'original_order']]
         
+        # 동명이인 경고
         homonym_warnings = []
         name_groups = df_main_result.groupby('수령자명')['original_order'].apply(list)
         for name, orders in name_groups.items():
@@ -195,6 +220,7 @@ def process_all_files(file1, file2, file3, df_master):
                 homonym_warnings.append(f"- [동명이인 의심] **{name}** 님의 주문이 떨어져서 입력되었습니다. 확인이 필요합니다.")
         warnings.extend(homonym_warnings)
 
+        # 결과 데이터프레임 생성
         df_quantity_summary = df_main_result.groupby('SKU상품명', as_index=False)['주문수량'].sum().rename(columns={'주문수량': '개수'})
         df_packing_list = df_main_result.sort_values(by='original_order')[['SKU상품명', '주문수량', '수령자명', '쇼핑몰']].copy()
         is_first_item = df_packing_list['수령자명'] != df_packing_list['수령자명'].shift(1)
@@ -210,11 +236,8 @@ def process_all_files(file1, file2, file3, df_master):
             warnings.append(f"- [미등록 상품] **{row['재고관리코드']}** / {row['SKU상품명']}")
         
         client_map = {
-            '쿠팡': '쿠팡 주식회사', 
-            '고도몰5': '고래미자사몰_현금영수증(고도몰)', 
-            '스마트스토어': '스토어팜',
-            '배민상회': '주식회사 우아한형제들(배민상회)',
-            '이지웰몰': '주식회사 현대이지웰'
+            '쿠팡': '쿠팡 주식회사', '고도몰5': '고래미자사몰_현금영수증(고도몰)', '스마트스토어': '스토어팜',
+            '배민상회': '주식회사 우아한형제들(배민상회)', '이지웰몰': '주식회사 현대이지웰'
         }
         
         df_ecount_upload = pd.DataFrame()
@@ -258,11 +281,8 @@ def process_all_files(file1, file2, file3, df_master):
         df_ecount_upload['거래유형'] = pd.to_numeric(df_ecount_upload['거래유형'])
         
         sort_order = [
-            '고래미자사몰_현금영수증(고도몰)', 
-            '스토어팜', 
-            '쿠팡 주식회사',
-            '주식회사 우아한형제들(배민상회)',
-            '주식회사 현대이지웰'
+            '고래미자사몰_현금영수증(고도몰)', '스토어팜', '쿠팡 주식회사',
+            '주식회사 우아한형제들(배민상회)', '주식회사 현대이지웰'
         ]
         
         df_ecount_upload['거래처명_sort'] = pd.Categorical(df_ecount_upload['거래처명'], categories=sort_order, ordered=True)
