@@ -105,7 +105,7 @@ def process_all_files(file1, file2, file3, df_master):
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
         
         # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 수정된 부분: 품목별 결제금액 안분 로직 추가
+        # 수정된 부분: 계산 방식을 명시적으로 변경하여 오류 해결
         # ----------------------------------------------------
         
         member_discount_col = '회원 할인 금액' if '회원 할인 금액' in df_godomall.columns else '회 할인 금액'
@@ -137,22 +137,23 @@ def process_all_files(file1, file2, file3, df_master):
                     f"(계산된 금액: {int(round(calculated_total))}원, 파일상 금액: {int(round(reported_total))}원)"
                 )
         
-        # 2. 주문 그룹별 실제 결제 총액 계산
-        final_order_total = godo_order_groups.transform(
-            lambda x: x.sum() if x.name in [member_discount_col, '쿠폰 할인 금액', '사용된 마일리지', '상품별 품목금액'] else x.max()
-        )
+        # 2. 주문 그룹별 실제 결제 총액 계산 (오류 수정된 방식)
+        total_item_price_group = godo_order_groups['상품별 품목금액'].transform('sum')
+        shipping_cost_group = godo_order_groups['총 배송 금액'].transform('max')
+        member_discount_group = godo_order_groups[member_discount_col].transform('sum')
+        coupon_discount_group = godo_order_groups['쿠폰 할인 금액'].transform('sum')
+        mileage_used_group = godo_order_groups['사용된 마일리지'].transform('sum')
+
         df_godomall['수정될_금액_고도몰'] = (
-            final_order_total['상품별 품목금액'] + final_order_total['총 배송 금액'] -
-            final_order_total[member_discount_col] - final_order_total['쿠폰 할인 금액'] -
-            final_order_total['사용된 마일리지']
+            total_item_price_group + shipping_cost_group -
+            member_discount_group - coupon_discount_group - mileage_used_group
         )
         
         # 3. 품목별로 결제 금액을 안분(비례 배분)
-        total_original_price = godo_order_groups['상품별 품목금액'].transform('sum')
         # 0으로 나누는 오류 방지
         payment_ratio = np.where(
-            total_original_price > 0, 
-            df_godomall['수정될_금액_고도몰'] / total_original_price, 
+            total_item_price_group > 0, 
+            df_godomall['수정될_금액_고도몰'] / total_item_price_group, 
             0
         )
         df_godomall['안분된_품목금액'] = df_godomall['상품별 품목금액'] * payment_ratio
