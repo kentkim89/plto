@@ -133,22 +133,33 @@ def process_all_files(file1, file2, file3, df_master):
         # 2. 파일별로 사용할 '상품명' 컬럼의 실제 이름 정의
         ecount_name_col = 'SKU상품명'
         godo_name_col = '상품명'
-        smartstore_name_col = '상품명' # 스마트스토어의 표준 컬럼명
+        # [수정] 스마트스토어의 표준 컬럼명인 '상품명'으로 변경
+        smartstore_name_col = '상품명' 
 
-        # 3. [오류 방지] 스마트스토어 파일에 '상품명' 컬럼이 있는지 확인
-        if smartstore_name_col not in df_smartstore.columns:
-            st.error(f"처리 중지: 스마트스토어 파일에 '{smartstore_name_col}' 컬럼이 없습니다.")
-            st.info(f"업로드하신 스마트스토어 파일의 상품명에 해당하는 실제 열(컬럼) 이름을 확인해주세요. (예: '상품명', '판매상품명' 등)")
-            # 찾은 실제 컬럼명을 코드의 smartstore_name_col 변수에 지정해야 합니다.
-            return None, None, None, None, False, "스마트스토어 파일 컬럼 오류", []
+        # 3. [오류 방지] 각 파일에 필요한 핵심 컬럼이 있는지 확인
+        required_cols = {
+            '스마트스토어': [smartstore_name_col, '재고관리코드', '수령자명', '실결제금액'],
+            '고도몰': [godo_name_col, '자체옵션코드', '수취인 이름', '상품별 품목금액'],
+            '이카운트': [ecount_name_col, '재고관리코드', '수령자명', '실결제금액']
+        }
         
+        # 파일 이름과 데이터프레임을 매핑
+        file_map = {'스마트스토어': df_smartstore, '고도몰': df_godomall, '이카운트': df_final}
+
+        for file_name, cols in required_cols.items():
+            for col in cols:
+                if col not in file_map[file_name].columns:
+                    st.error(f"처리 중지: '{file_name}' 파일에 필수 컬럼인 '{col}'이 없습니다.")
+                    st.info(f"업로드하신 '{file_name}' 파일의 실제 열(컬럼) 이름을 확인하고 코드의 변수 값을 수정해주세요.")
+                    return None, None, None, None, False, f"{file_name} 파일 컬럼 오류", []
+
         # 4. 데이터 값의 공백 제거 및 타입 통일
         for df in [df_final, df_smartstore, df_godomall]:
              for col in df.columns:
                 if df[col].dtype == 'object':
                     df[col] = df[col].astype(str).str.strip().replace('nan', '')
         
-        # 5. 각 데이터프레임에 '최종키'와 '순번' 생성 (파일별 정확한 컬럼명 사용)
+        # 5. 각 데이터프레임에 '최종키'와 '순번' 생성
         df_godomall['최종키'] = np.where(df_godomall['자체옵션코드'] != '', df_godomall['자체옵션코드'], df_godomall[godo_name_col])
         df_godomall['merge_helper'] = df_godomall.groupby(['수취인 이름', '최종키']).cumcount()
         
@@ -302,7 +313,8 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
                     st.dataframe(df_main)
                     st.download_button("📥 다운로드", to_excel_formatted(df_main), f"최종_실결제금액_보정완료_{timestamp}.xlsx")
             else:
-                st.error(message)
+                # 오류 메시지는 process_all_files 함수 내에서 st.error()로 이미 표시됨
+                pass
         
         except FileNotFoundError:
             st.error("🚨 치명적 오류: `master_data.csv` 파일을 찾을 수 없습니다! `app.py`와 동일한 폴더에 파일이 있는지 반드시 확인해주세요.")
