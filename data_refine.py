@@ -1,10 +1,3 @@
-st.warning("⚠️ 3개의 엑셀 파일을 모두 업로드해야 실행할 수 있습니다.")```
-
-아래는 이 오류를 수정한 전체 코드입니다. 이 코드를 사용하시면 정상적으로 작동할 것입니다.
-
-### 수정된 전체 코드
-
-```python
 import streamlit as st
 import pandas as pd
 import io
@@ -40,7 +33,7 @@ def to_excel_formatted(df, format_type=None):
     # 파일별 특수 서식
     for column_cells in sheet.columns:
         max_length = 0
-        column = column_cells.column_letter
+        column = column_cells[0].column_letter
         for cell in column_cells:
             try:
                 if cell.value:
@@ -133,7 +126,7 @@ def process_all_files(file1, file2, file3, df_master):
         
         for (name, total_payment), group in grouped_godomall:
             calculated_total = group['수정될_금액_고도몰'].sum()
-            actual_total = group['총 결제 금액'].iloc
+            actual_total = group['총 결제 금액'].iloc[0] # <--- 오류가 수정된 부분
             discrepancy = calculated_total - actual_total
             
             if abs(discrepancy) > 1:
