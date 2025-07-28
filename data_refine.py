@@ -123,21 +123,23 @@ def process_all_files(file1, file2, file3, df_master):
 
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
         
-        # ▼▼▼ [핵심 개선] 단일 '최종키'를 생성하여 병합하는 로직 ▼▼▼
+        # ▼▼▼ [핵심 수정] 각 파일의 정확한 컬럼명을 사용하여 '최종키' 생성 ▼▼▼
         
         # 1. 데이터 타입 및 공백 통일
         for df in [df_final, df_smartstore, df_godomall]:
-            for col in ['재고관리코드', 'SKU상품명', '수령자명', '자체옵션코드', '상품명', '수취인 이름']:
-                if col in df.columns:
-                    df[col] = df[col].astype(str).str.strip().replace('nan', '')
+            for col in df.columns:
+                if '코드' in col or '상품명' in col or '이름' in col:
+                     if df[col].dtype == 'object':
+                        df[col] = df[col].astype(str).str.strip().replace('nan', '')
 
-        # 2. 각 데이터프레임에 '최종키'와 '순번' 생성
+        # 2. 각 데이터프레임에 '최종키'와 '순번' 생성 (파일별 정확한 컬럼명 사용)
         df_godomall['최종키'] = np.where(df_godomall['자체옵션코드'] != '', df_godomall['자체옵션코드'], df_godomall['상품명'])
         df_godomall['merge_helper'] = df_godomall.groupby(['수취인 이름', '최종키']).cumcount()
-
+        
         df_final['최종키'] = np.where(df_final['재고관리코드'] != '', df_final['재고관리코드'], df_final['SKU상품명'])
         df_final['merge_helper'] = df_final.groupby(['수령자명', '최종키']).cumcount()
 
+        # 스마트스토어의 상품명 컬럼은 '상품명'입니다.
         df_smartstore['최종키'] = np.where(df_smartstore['재고관리코드'] != '', df_smartstore['재고관리코드'], df_smartstore['상품명'])
         df_smartstore['merge_helper'] = df_smartstore.groupby(['수령자명', '최종키']).cumcount()
         
