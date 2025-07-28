@@ -123,44 +123,49 @@ def process_all_files(file1, file2, file3, df_master):
 
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
         
-        df_final['수령자명'] = df_final['수령자명'].astype(str).str.strip()
-        df_final['주문수량'] = pd.to_numeric(df_final['주문수량'], errors='coerce').fillna(0).astype(int)
-        df_final['실결제금액'] = pd.to_numeric(df_final['실결제금액'], errors='coerce').fillna(0).astype(int)
+        # ▼▼▼ [핵심 개선] 단일 '최종키'를 생성하여 병합하는 로직 ▼▼▼
         
-        # ▼▼▼ [핵심 개선] 폴백(Fallback) 로직 추가 ▼▼▼
-        # 병합 순서 보장을 위한 도우미 컬럼 생성
-        df_godomall['merge_helper'] = df_godomall.groupby(['수취인 이름', '자체옵션코드', '상품명']).cumcount()
-        df_final['merge_helper'] = df_final.groupby(['수령자명', '재고관리코드', 'SKU상품명']).cumcount()
+        # 1. 데이터 타입 및 공백 통일
+        for df in [df_final, df_smartstore, df_godomall]:
+            for col in ['재고관리코드', 'SKU상품명', '수령자명', '자체옵션코드', '상품명', '수취인 이름']:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.strip().replace('nan', '')
+
+        # 2. 각 데이터프레임에 '최종키'와 '순번' 생성
+        df_godomall['최종키'] = np.where(df_godomall['자체옵션코드'] != '', df_godomall['자체옵션코드'], df_godomall['상품명'])
+        df_godomall['merge_helper'] = df_godomall.groupby(['수취인 이름', '최종키']).cumcount()
+
+        df_final['최종키'] = np.where(df_final['재고관리코드'] != '', df_final['재고관리코드'], df_final['SKU상품명'])
+        df_final['merge_helper'] = df_final.groupby(['수령자명', '최종키']).cumcount()
+
+        df_smartstore['최종키'] = np.where(df_smartstore['재고관리코드'] != '', df_smartstore['재고관리코드'], df_smartstore['상품명'])
+        df_smartstore['merge_helper'] = df_smartstore.groupby(['수령자명', '최종키']).cumcount()
         
-        # 1. (1차 시도) SKU 기준 병합
-        godo_price_map_sku = df_godomall.rename(columns={'자체옵션코드': '재고관리코드', '수취인 이름': '수령자명'})
-        df_final = pd.merge(df_final, godo_price_map_sku[['수령자명', '재고관리코드', 'merge_helper', '수정될_금액_고도몰']], on=['수령자명', '재고관리코드', 'merge_helper'], how='left')
-        df_final.rename(columns={'수정될_금액_고도몰': '수정될_금액_고도몰_SKU'}, inplace=True)
+        # 3. 고도몰 가격 병합
+        godo_price_map = df_godomall[['수취인 이름', '최종키', 'merge_helper', '수정될_금액_고도몰']]
+        df_final = pd.merge(df_final, godo_price_map,
+                            left_on=['수령자명', '최종키', 'merge_helper'],
+                            right_on=['수취인 이름', '최종키', 'merge_helper'],
+                            how='left')
         
-        # 2. (2차 시도) 상품명 기준 병합
-        godo_price_map_name = df_godomall.rename(columns={'상품명': 'SKU상품명', '수취인 이름': '수령자명'})
-        df_final = pd.merge(df_final, godo_price_map_name[['수령자명', 'SKU상품명', 'merge_helper', '수정될_금액_고도몰']], on=['수령자명', 'SKU상품명', 'merge_helper'], how='left')
-        df_final.rename(columns={'수정될_금액_고도몰': '수정될_금액_고도몰_상품명'}, inplace=True)
-        
-        # 3. 1차 시도 결과를 기본으로, 실패한 경우(NaN) 2차 시도 결과로 채우기
-        df_final['수정될_금액_고도몰'] = df_final['수정될_금액_고도몰_SKU'].fillna(df_final['수정될_금액_고도몰_상품명'])
-        
-        # 4. 스마트스토어 병합
-        smartstore_prices = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})
-        key_cols_smartstore = ['재고관리코드', '주문수량', '수령자명']
-        df_final = pd.merge(df_final, smartstore_prices[key_cols_smartstore + ['수정될_금액_스토어']], on=key_cols_smartstore, how='left')
-        
-        # 5. 불필요한 컬럼 정리
-        df_final.drop(columns=['merge_helper', '수정될_금액_고도몰_SKU', '수정될_금액_고도몰_상품명'], inplace=True)
-        
-        warnings = []
-        fail_mask = (df_final['쇼핑몰'].isin(['고도몰5', '스마트스토어'])) & (df_final['수정될_금액_고도몰'].isna() & df_final['수정될_금액_스토어'].isna())
-        for _, row in df_final[fail_mask].iterrows():
-            warnings.append(f"- [금액보정 최종실패] **{row['수령자명']}** / {row['SKU상품명']} (원인: SKU와 상품명 모두 불일치)")
-        warnings.extend(godomall_warnings)
-        
+        # 4. 스마트스토어 가격 병합
+        smartstore_price_map = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})
+        smartstore_price_map = smartstore_price_map[['수령자명', '최종키', 'merge_helper', '수정될_금액_스토어']]
+        df_final = pd.merge(df_final, smartstore_price_map,
+                            on=['수령자명', '최종키', 'merge_helper'],
+                            how='left')
+                            
+        # 5. 최종 금액 업데이트 및 정리
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '고도몰5', df_final['수정될_금액_고도몰'].fillna(df_final['실결제금액']), df_final['실결제금액'])
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '스마트스토어', df_final['수정될_금액_스토어'].fillna(df_final['실결제금액']), df_final['실결제금액'])
+        df_final.drop(columns=['최종키', 'merge_helper', '수취인 이름', '수정될_금액_고도몰', '수정될_금액_스토어'], inplace=True, errors='ignore')
+
+        # --- 나머지 처리 로직 (기존과 동일) ---
+        warnings = []
+        fail_mask = (df_final['쇼핑몰'] == '고도몰5') & (pd.isna(df_final.get('수정될_금액_고도몰')))
+        for _, row in df_final[fail_mask].iterrows():
+             warnings.append(f"- [금액보정 최종실패] **{row['수령자명']}** / {row['SKU상품명']} (원인: SKU와 상품명 모두 불일치)")
+        warnings.extend(godomall_warnings)
         
         df_main_result = df_final[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명', 'original_order']]
         
@@ -181,7 +186,7 @@ def process_all_files(file1, file2, file3, df_master):
 
         df_merged = pd.merge(df_main_result, df_master[['SKU코드', '과세여부', '입수량']], left_on='재고관리코드', right_on='SKU코드', how='left')
         
-        unmastered = df_merged[df_merged['SKU코드'].isna()]
+        unmastered = df_merged[df_merged['재고관리코드'].notna() & df_merged['SKU코드'].isna()]
         for _, row in unmastered.iterrows():
             warnings.append(f"- [미등록 상품] **{row['재고관리코드']}** / {row['SKU상품명']}")
 
