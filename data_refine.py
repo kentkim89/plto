@@ -113,9 +113,10 @@ def process_all_files(file1, file2, file3, df_master):
             if col in df_godomall.columns: # 열이 존재하는지 한 번 더 확인
                 df_godomall[col] = pd.to_numeric(df_godomall[col].astype(str).str.replace('[원,]', '', regex=True), errors='coerce').fillna(0)
         
-        # 2단계: 배송비 중복 계산 방지
+        # 2단계: 배송비 중복 계산 방지 (개선된 로직)
+        # '수취인 이름'과 '총 결제 금액'을 기준으로 고유한 주문을 식별하여 각 주문의 첫 번째 항목에만 배송비를 적용합니다.
         df_godomall['보정된_배송비'] = np.where(
-            df_godomall.duplicated(subset=['수취인 이름']), 
+            df_godomall.duplicated(subset=['수취인 이름', '총 결제 금액']), 
             0, 
             df_godomall['총 배송 금액']
         )
@@ -128,15 +129,18 @@ def process_all_files(file1, file2, file3, df_master):
         
         # 3단계: 결제 금액 검증 및 알림 기능 추가
         godomall_warnings = []
-        grouped_godomall = df_godomall.groupby('수취인 이름')
+        # '수취인 이름'과 '총 결제 금액'으로 그룹화하여 주문 건별로 검증합니다.
+        grouped_godomall = df_godomall.groupby(['수취인 이름', '총 결제 금액'])
         
-        for name, group in grouped_godomall:
+        for (name, total_payment), group in grouped_godomall:
             calculated_total = group['수정될_금액_고도몰'].sum()
+            # 실제 총 결제 금액은 그룹 내에서 동일하므로 첫 번째 값을 사용합니다.
             actual_total = group['총 결제 금액'].iloc[0]
             discrepancy = calculated_total - actual_total
             
+            # 약간의 부동소수점 오차를 감안하여 1원 초과의 차이가 날 경우에만 경고
             if abs(discrepancy) > 1:
-                warning_msg = f"- [고도몰 금액 불일치] **{name}**님의 주문의 계산된 금액과 실제 결제 금액이 **{discrepancy:,.0f}원** 만큼 차이납니다. (계산값: {calculated_total:,.0f}원, 실제값: {actual_total:,.0f}원)"
+                warning_msg = f"- [고도몰 금액 불일치] **{name}**님의 주문(결제액:{actual_total:,.0f}원)의 계산된 금액과 실제 결제 금액이 **{discrepancy:,.0f}원** 만큼 차이납니다. (계산값: {calculated_total:,.0f}원)"
                 godomall_warnings.append(warning_msg)
 
         # 기존 처리 로직 시작
@@ -334,4 +338,4 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
             st.error(f"🚨 상품 마스터 파일을 읽는 중 예상치 못한 오류가 발생했습니다: {e}")
 
     else:
-        st.warning("⚠️ 3개의 엑셀 파일을 모두 업로드해야 실행할 수 있습니다.")
+        st.warning("⚠️ 3개의 엑셀 파일을 모두 업로드해야 실행할 수 있습니다.")```
