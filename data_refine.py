@@ -108,79 +108,62 @@ def process_all_files(file1, file2, file3, df_master):
             if col in df_godomall.columns:
                 df_godomall[col] = pd.to_numeric(df_godomall[col].astype(str).str.replace('[원,]', '', regex=True), errors='coerce').fillna(0)
         
-        # --- 배송비 중복 계산 방지 로직 (이 부분은 이미 정확합니다) ---
-        df_godomall['보정된_배송비'] = np.where(
-            df_godomall.duplicated(subset=['수취인 이름', '총 결제 금액']), 
-            0, 
-            df_godomall['총 배송 금액']
-        )
-        df_godomall['수정될_금액_고도몰'] = (
-            df_godomall['상품별 품목금액'] + df_godomall['보정된_배송비'] - df_godomall['회원 할인 금액'] - 
-            df_godomall['쿠폰 할인 금액'] - df_godomall['사용된 마일리지']
-        )
+        df_godomall['보정된_배송비'] = np.where(df_godomall.duplicated(subset=['수취인 이름', '총 결제 금액']), 0, df_godomall['총 배송 금액'])
+        df_godomall['수정될_금액_고도몰'] = (df_godomall['상품별 품목금액'] + df_godomall['보정된_배송비'] - df_godomall['회원 할인 금액'] - df_godomall['쿠폰 할인 금액'] - df_godomall['사용된 마일리지'])
         
         godomall_warnings = []
         grouped_godomall = df_godomall.groupby(['수취인 이름', '총 결제 금액'])
-        
         for (name, total_payment), group in grouped_godomall:
             calculated_total = group['수정될_금액_고도몰'].sum()
             actual_total = group['총 결제 금액'].iloc[0]
             discrepancy = calculated_total - actual_total
-            
             if abs(discrepancy) > 1:
                 warning_msg = f"- [고도몰 금액 불일치] **{name}**님의 주문(결제액:{actual_total:,.0f}원)의 계산된 금액과 실제 결제 금액이 **{discrepancy:,.0f}원** 만큼 차이납니다."
                 godomall_warnings.append(warning_msg)
 
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
         
-        # --- 데이터 타입 통일 ---
         df_final['수령자명'] = df_final['수령자명'].astype(str).str.strip()
         df_final['주문수량'] = pd.to_numeric(df_final['주문수량'], errors='coerce').fillna(0).astype(int)
         df_final['실결제금액'] = pd.to_numeric(df_final['실결제금액'], errors='coerce').fillna(0).astype(int)
         
-        # ▼▼▼ [핵심 수정] 고도몰 가격을 정확히 매핑하기 위한 새로운 병합 로직 ▼▼▼
-        # 전제: 고도몰 파일의 '자체옵션코드'와 이카운트 파일의 '재고관리코드'는 동일한 SKU 값이어야 합니다.
+        # ▼▼▼ [핵심 개선] 폴백(Fallback) 로직 추가 ▼▼▼
+        # 병합 순서 보장을 위한 도우미 컬럼 생성
+        df_godomall['merge_helper'] = df_godomall.groupby(['수취인 이름', '자체옵션코드', '상품명']).cumcount()
+        df_final['merge_helper'] = df_final.groupby(['수령자명', '재고관리코드', 'SKU상품명']).cumcount()
         
-        # 1. 고도몰 데이터에서 가격 지도(price map) 생성
-        godomall_price_map = df_godomall[['자체옵션코드', '수취인 이름', '수정될_금액_고도몰']].copy()
-        godomall_price_map.rename(columns={'자체옵션코드': '재고관리코드', '수취인 이름': '수령자명'}, inplace=True)
+        # 1. (1차 시도) SKU 기준 병합
+        godo_price_map_sku = df_godomall.rename(columns={'자체옵션코드': '재고관리코드', '수취인 이름': '수령자명'})
+        df_final = pd.merge(df_final, godo_price_map_sku[['수령자명', '재고관리코드', 'merge_helper', '수정될_금액_고도몰']], on=['수령자명', '재고관리코드', 'merge_helper'], how='left')
+        df_final.rename(columns={'수정될_금액_고도몰': '수정될_금액_고도몰_SKU'}, inplace=True)
         
-        # 2. 동일 고객이 동일 상품을 여러 개 주문하는 경우를 대비해 순번 부여
-        godomall_price_map['merge_helper'] = godomall_price_map.groupby(['수령자명', '재고관리코드']).cumcount()
-        df_final['merge_helper'] = df_final.groupby(['수령자명', '재고관리코드']).cumcount()
+        # 2. (2차 시도) 상품명 기준 병합
+        godo_price_map_name = df_godomall.rename(columns={'상품명': 'SKU상품명', '수취인 이름': '수령자명'})
+        df_final = pd.merge(df_final, godo_price_map_name[['수령자명', 'SKU상품명', 'merge_helper', '수정될_금액_고도몰']], on=['수령자명', 'SKU상품명', 'merge_helper'], how='left')
+        df_final.rename(columns={'수정될_금액_고도몰': '수정될_금액_고도몰_상품명'}, inplace=True)
         
-        # 3. 스마트스토어 병합 (기존과 동일)
+        # 3. 1차 시도 결과를 기본으로, 실패한 경우(NaN) 2차 시도 결과로 채우기
+        df_final['수정될_금액_고도몰'] = df_final['수정될_금액_고도몰_SKU'].fillna(df_final['수정될_금액_고도몰_상품명'])
+        
+        # 4. 스마트스토어 병합
         smartstore_prices = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})
         key_cols_smartstore = ['재고관리코드', '주문수량', '수령자명']
         df_final = pd.merge(df_final, smartstore_prices[key_cols_smartstore + ['수정될_금액_스토어']], on=key_cols_smartstore, how='left')
-
-        # 4. 고도몰 병합 (새로운 방식)
-        df_final = pd.merge(df_final, godomall_price_map, on=['수령자명', '재고관리코드', 'merge_helper'], how='left')
-
-        # 5. 병합 후 도우미 컬럼 삭제
-        df_final.drop(columns=['merge_helper'], inplace=True)
         
-        # --- 경고 메시지 생성 ---
+        # 5. 불필요한 컬럼 정리
+        df_final.drop(columns=['merge_helper', '수정될_금액_고도몰_SKU', '수정될_금액_고도몰_상품명'], inplace=True)
+        
         warnings = []
-        # 고도몰 금액 보정 실패 경고 (SKU가 없거나 이름이 안맞으면 실패함)
-        godo_fail_mask = (df_final['쇼핑몰'] == '고도몰5') & (df_final['수정될_금액_고도몰'].isna())
-        for _, row in df_final[godo_fail_mask].iterrows():
-            warnings.append(f"- [고도몰 금액보정 실패] **{row['수령자명']}** / {row['SKU상품명']} (원인: 이카운트의 재고관리코드와 고도몰의 자체옵션코드가 일치하지 않음)")
-        
-        # 스마트스토어 금액 보정 실패 경고
-        smartstore_fail_mask = (df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna())
-        for _, row in df_final[smartstore_fail_mask].iterrows():
-             warnings.append(f"- [스마트스토어 금액보정 실패] **{row['수령자명']}** / {row['SKU상품명']}")
-        
+        fail_mask = (df_final['쇼핑몰'].isin(['고도몰5', '스마트스토어'])) & (df_final['수정될_금액_고도몰'].isna() & df_final['수정될_금액_스토어'].isna())
+        for _, row in df_final[fail_mask].iterrows():
+            warnings.append(f"- [금액보정 최종실패] **{row['수령자명']}** / {row['SKU상품명']} (원인: SKU와 상품명 모두 불일치)")
         warnings.extend(godomall_warnings)
         
-        # --- 최종 결제 금액 업데이트 ---
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '고도몰5', df_final['수정될_금액_고도몰'].fillna(df_final['실결제금액']), df_final['실결제금액'])
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '스마트스토어', df_final['수정될_금액_스토어'].fillna(df_final['실결제금액']), df_final['실결제금액'])
         
         df_main_result = df_final[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명', 'original_order']]
         
-        # --- 나머지 처리 로직 (기존과 동일) ---
         homonym_warnings = []
         name_groups = df_main_result.groupby('수령자명')['original_order'].apply(list)
         for name, orders in name_groups.items():
