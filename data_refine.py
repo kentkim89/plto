@@ -123,52 +123,56 @@ def process_all_files(file1, file2, file3, df_master):
 
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
         
-        # ▼▼▼ [핵심 수정] 각 파일의 정확한 컬럼명을 사용하여 '최종키' 생성 ▼▼▼
+        # ▼▼▼ [핵심 수정] 컬럼명 오류를 방지하고 명확한 에러를 안내하는 로직 ▼▼▼
         
-        # 1. 데이터 타입 및 공백 통일
-        for df in [df_final, df_smartstore, df_godomall]:
-            for col in df.columns:
-                if '코드' in col or '상품명' in col or '이름' in col:
-                     if df[col].dtype == 'object':
-                        df[col] = df[col].astype(str).str.strip().replace('nan', '')
+        # 1. 컬럼명의 앞뒤 공백 제거
+        df_smartstore.columns = df_smartstore.columns.str.strip()
+        df_godomall.columns = df_godomall.columns.str.strip()
+        df_final.columns = df_final.columns.str.strip()
 
-        # 2. 각 데이터프레임에 '최종키'와 '순번' 생성 (파일별 정확한 컬럼명 사용)
-        df_godomall['최종키'] = np.where(df_godomall['자체옵션코드'] != '', df_godomall['자체옵션코드'], df_godomall['상품명'])
+        # 2. 파일별로 사용할 '상품명' 컬럼의 실제 이름 정의
+        ecount_name_col = 'SKU상품명'
+        godo_name_col = '상품명'
+        smartstore_name_col = '상품명' # 스마트스토어의 표준 컬럼명
+
+        # 3. [오류 방지] 스마트스토어 파일에 '상품명' 컬럼이 있는지 확인
+        if smartstore_name_col not in df_smartstore.columns:
+            st.error(f"처리 중지: 스마트스토어 파일에 '{smartstore_name_col}' 컬럼이 없습니다.")
+            st.info(f"업로드하신 스마트스토어 파일의 상품명에 해당하는 실제 열(컬럼) 이름을 확인해주세요. (예: '상품명', '판매상품명' 등)")
+            # 찾은 실제 컬럼명을 코드의 smartstore_name_col 변수에 지정해야 합니다.
+            return None, None, None, None, False, "스마트스토어 파일 컬럼 오류", []
+        
+        # 4. 데이터 값의 공백 제거 및 타입 통일
+        for df in [df_final, df_smartstore, df_godomall]:
+             for col in df.columns:
+                if df[col].dtype == 'object':
+                    df[col] = df[col].astype(str).str.strip().replace('nan', '')
+        
+        # 5. 각 데이터프레임에 '최종키'와 '순번' 생성 (파일별 정확한 컬럼명 사용)
+        df_godomall['최종키'] = np.where(df_godomall['자체옵션코드'] != '', df_godomall['자체옵션코드'], df_godomall[godo_name_col])
         df_godomall['merge_helper'] = df_godomall.groupby(['수취인 이름', '최종키']).cumcount()
         
-        df_final['최종키'] = np.where(df_final['재고관리코드'] != '', df_final['재고관리코드'], df_final['SKU상품명'])
+        df_final['최종키'] = np.where(df_final['재고관리코드'] != '', df_final['재고관리코드'], df_final[ecount_name_col])
         df_final['merge_helper'] = df_final.groupby(['수령자명', '최종키']).cumcount()
 
-        # 스마트스토어의 상품명 컬럼은 '상품명'입니다.
-        df_smartstore['최종키'] = np.where(df_smartstore['재고관리코드'] != '', df_smartstore['재고관리코드'], df_smartstore['상품명'])
+        df_smartstore['최종키'] = np.where(df_smartstore['재고관리코드'] != '', df_smartstore['재고관리코드'], df_smartstore[smartstore_name_col])
         df_smartstore['merge_helper'] = df_smartstore.groupby(['수령자명', '최종키']).cumcount()
         
-        # 3. 고도몰 가격 병합
+        # 6. 가격 정보 병합
         godo_price_map = df_godomall[['수취인 이름', '최종키', 'merge_helper', '수정될_금액_고도몰']]
-        df_final = pd.merge(df_final, godo_price_map,
-                            left_on=['수령자명', '최종키', 'merge_helper'],
-                            right_on=['수취인 이름', '최종키', 'merge_helper'],
-                            how='left')
+        df_final = pd.merge(df_final, godo_price_map, left_on=['수령자명', '최종키', 'merge_helper'], right_on=['수취인 이름', '최종키', 'merge_helper'], how='left')
         
-        # 4. 스마트스토어 가격 병합
         smartstore_price_map = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})
         smartstore_price_map = smartstore_price_map[['수령자명', '최종키', 'merge_helper', '수정될_금액_스토어']]
-        df_final = pd.merge(df_final, smartstore_price_map,
-                            on=['수령자명', '최종키', 'merge_helper'],
-                            how='left')
+        df_final = pd.merge(df_final, smartstore_price_map, on=['수령자명', '최종키', 'merge_helper'], how='left')
                             
-        # 5. 최종 금액 업데이트 및 정리
+        # 7. 최종 금액 업데이트 및 임시 컬럼 정리
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '고도몰5', df_final['수정될_금액_고도몰'].fillna(df_final['실결제금액']), df_final['실결제금액'])
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '스마트스토어', df_final['수정될_금액_스토어'].fillna(df_final['실결제금액']), df_final['실결제금액'])
         df_final.drop(columns=['최종키', 'merge_helper', '수취인 이름', '수정될_금액_고도몰', '수정될_금액_스토어'], inplace=True, errors='ignore')
-
+        
         # --- 나머지 처리 로직 (기존과 동일) ---
         warnings = []
-        fail_mask = (df_final['쇼핑몰'] == '고도몰5') & (pd.isna(df_final.get('수정될_금액_고도몰')))
-        for _, row in df_final[fail_mask].iterrows():
-             warnings.append(f"- [금액보정 최종실패] **{row['수령자명']}** / {row['SKU상품명']} (원인: SKU와 상품명 모두 불일치)")
-        warnings.extend(godomall_warnings)
-        
         df_main_result = df_final[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명', 'original_order']]
         
         homonym_warnings = []
@@ -180,11 +184,10 @@ def process_all_files(file1, file2, file3, df_master):
 
         df_quantity_summary = df_main_result.groupby('SKU상품명', as_index=False)['주문수량'].sum().rename(columns={'주문수량': '개수'})
         df_packing_list = df_main_result.sort_values(by='original_order')[['SKU상품명', '주문수량', '수령자명', '쇼핑몰']].copy()
-        is_first_item = df_packing_list.duplicated(subset=['수령자명'], keep='first') == False
+        is_first_item = ~df_packing_list.duplicated(subset=['수령자명'], keep='first')
         df_packing_list['묶음번호'] = is_first_item.cumsum()
-        df_packing_list_final = df_packing_list.copy()
-        df_packing_list_final['묶음번호'] = df_packing_list_final['묶음번호'].where(is_first_item, '')
-        df_packing_list_final = df_packing_list_final[['묶음번호', 'SKU상품명', '주문수량', '수령자명', '쇼핑몰']]
+        df_packing_list['묶음번호'] = np.where(is_first_item, df_packing_list['묶음번호'], '')
+        df_packing_list_final = df_packing_list[['묶음번호', 'SKU상품명', '주문수량', '수령자명', '쇼핑몰']]
 
         df_merged = pd.merge(df_main_result, df_master[['SKU코드', '과세여부', '입수량']], left_on='재고관리코드', right_on='SKU코드', how='left')
         
