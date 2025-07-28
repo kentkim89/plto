@@ -102,21 +102,54 @@ def process_all_files(file1, file2, file3, df_master):
 
         df_ecount_orig['original_order'] = range(len(df_ecount_orig))
         
-        # <<-- 최종 수정: 고도몰 실결제금액 처리 로직 전면 수정 -->>
-        last_col_name = df_godomall.columns[-1]
-        df_godomall['수정될_금액_고도몰'] = pd.to_numeric(df_godomall[last_col_name].astype(str).str.replace(',', ''), errors='coerce')
+        # ▼▼▼ 컬럼명 호환성 처리 (오류 수정) ▼▼▼
+        # '회 할인 금액'과 '회원 할인 금액'을 모두 처리할 수 있도록 열 이름을 통일합니다.
+        if '회 할인 금액' in df_godomall.columns and '회원 할인 금액' not in df_godomall.columns:
+            df_godomall.rename(columns={'회 할인 금액': '회원 할인 금액'}, inplace=True)
         
+        # 1단계: 데이터 클리닝 강화
+        cols_to_numeric = ['상품별 품목금액', '총 배송 금액', '회원 할인 금액', '쿠폰 할인 금액', '사용된 마일리지', '총 결제 금액']
+        for col in cols_to_numeric:
+            if col in df_godomall.columns: # 열이 존재하는지 한 번 더 확인
+                df_godomall[col] = pd.to_numeric(df_godomall[col].astype(str).str.replace('[원,]', '', regex=True), errors='coerce').fillna(0)
+        
+        # 2단계: 배송비 중복 계산 방지
+        df_godomall['보정된_배송비'] = np.where(
+            df_godomall.duplicated(subset=['수취인 이름']), 
+            0, 
+            df_godomall['총 배송 금액']
+        )
+        
+        # 보정된 배송비를 사용하여 각 품목별 최종 금액 계산
+        df_godomall['수정될_금액_고도몰'] = (
+            df_godomall['상품별 품목금액'] + df_godomall['보정된_배송비'] - df_godomall['회원 할인 금액'] - 
+            df_godomall['쿠폰 할인 금액'] - df_godomall['사용된 마일리지']
+        )
+        
+        # 3단계: 결제 금액 검증 및 알림 기능 추가
+        godomall_warnings = []
+        grouped_godomall = df_godomall.groupby('수취인 이름')
+        
+        for name, group in grouped_godomall:
+            calculated_total = group['수정될_금액_고도몰'].sum()
+            actual_total = group['총 결제 금액'].iloc[0]
+            discrepancy = calculated_total - actual_total
+            
+            if abs(discrepancy) > 1:
+                warning_msg = f"- [고도몰 금액 불일치] **{name}**님의 주문의 계산된 금액과 실제 결제 금액이 **{discrepancy:,.0f}원** 만큼 차이납니다. (계산값: {calculated_total:,.0f}원, 실제값: {actual_total:,.0f}원)"
+                godomall_warnings.append(warning_msg)
+
+        # 기존 처리 로직 시작
         df_final = df_ecount_orig.copy().rename(columns={'금액': '실결제금액'})
         
         key_cols_smartstore = ['재고관리코드', '주문수량', '수령자명']
         smartstore_prices = df_smartstore.rename(columns={'실결제금액': '수정될_금액_스토어'})[key_cols_smartstore + ['수정될_금액_스토어']].drop_duplicates(subset=key_cols_smartstore, keep='first')
         
-        # <<-- 최종 수정: 고도몰 금액 보정을 위한 연결고리(Key) 변경 -->>
         key_cols_godomall = ['수취인 이름', '상품수량', '상품별 품목금액']
         godomall_prices_for_merge = df_godomall[key_cols_godomall + ['수정될_금액_고도몰']].rename(columns={'수취인 이름': '수령자명', '상품수량': '주문수량', '상품별 품목금액': '실결제금액'})
         godomall_prices_for_merge = godomall_prices_for_merge.drop_duplicates(subset=['수령자명', '주문수량', '실결제금액'], keep='first')
         
-        # 데이터 병합 전, 키로 사용될 열들의 데이터 타입을 통일 (공백 제거 포함)
+        # 데이터 타입 통일
         df_final['수령자명'] = df_final['수령자명'].astype(str).str.strip()
         df_final['주문수량'] = pd.to_numeric(df_final['주문수량'], errors='coerce').fillna(0).astype(int)
         df_final['실결제금액'] = pd.to_numeric(df_final['실결제금액'], errors='coerce').fillna(0).astype(int)
@@ -128,16 +161,21 @@ def process_all_files(file1, file2, file3, df_master):
         godomall_prices_for_merge['주문수량'] = pd.to_numeric(godomall_prices_for_merge['주문수량'], errors='coerce').fillna(0).astype(int)
         godomall_prices_for_merge['실결제금액'] = pd.to_numeric(godomall_prices_for_merge['실결제금액'], errors='coerce').fillna(0).astype(int)
 
+        # 데이터 병합
         df_final = pd.merge(df_final, smartstore_prices, on=key_cols_smartstore, how='left')
         df_final = pd.merge(df_final, godomall_prices_for_merge, on=['수령자명', '주문수량', '실결제금액'], how='left')
 
+        # 경고 메시지 생성 및 통합
         warnings = [f"- [금액보정 실패] **{row['쇼핑몰']}** / {row['수령자명']} / {row['SKU상품명']}" for _, row in df_final[(df_final['쇼핑몰'] == '스마트스토어') & (df_final['수정될_금액_스토어'].isna()) | (df_final['쇼핑몰'] == '고도몰5') & (df_final['수정될_금액_고도몰'].isna())].iterrows()]
-        
+        warnings.extend(godomall_warnings)
+
+        # 최종 결제 금액 업데이트
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '고도몰5', df_final['수정될_금액_고도몰'].fillna(df_final['실결제금액']), df_final['실결제금액'])
         df_final['실결제금액'] = np.where(df_final['쇼핑몰'] == '스마트스토어', df_final['수정될_금액_스토어'].fillna(df_final['실결제금액']), df_final['실결제금액'])
         
         df_main_result = df_final[['재고관리코드', 'SKU상품명', '주문수량', '실결제금액', '쇼핑몰', '수령자명', 'original_order']]
         
+        # 동명이인 경고 추가
         homonym_warnings = []
         name_groups = df_main_result.groupby('수령자명')['original_order'].apply(list)
         for name, orders in name_groups.items():
@@ -159,7 +197,13 @@ def process_all_files(file1, file2, file3, df_master):
         for _, row in unmastered.iterrows():
             warnings.append(f"- [미등록 상품] **{row['재고관리코드']}** / {row['SKU상품명']}")
 
-        client_map = {'쿠팡': '쿠팡 주식회사', '고도몰5': '고래미자사몰_현금영수증(고도몰)', '스마트스토어': '스토어팜'}
+        client_map = {
+            '쿠팡': '쿠팡 주식회사', 
+            '고도몰5': '고래미자사몰_현금영수증(고도몰)', 
+            '스마트스토어': '스토어팜',
+            '배민상회': '주식회사 우아한형제들(배민상회)',
+            '이지웰몰': '주식회사 현대이지웰'
+        }
         
         df_ecount_upload = pd.DataFrame()
         
@@ -199,9 +243,22 @@ def process_all_files(file1, file2, file3, df_master):
         for col in ['공급가액', '부가세']:
             df_ecount_upload[col] = df_ecount_upload[col].round().astype('Int64')
         
-        sort_order = ['고래미자사몰_현금영수증(고도몰)', '스토어팜', '쿠팡 주식회사']
+        df_ecount_upload['거래유형'] = pd.to_numeric(df_ecount_upload['거래유형'])
+        
+        sort_order = [
+            '고래미자사몰_현금영수증(고도몰)', 
+            '스토어팜', 
+            '쿠팡 주식회사',
+            '주식회사 우아한형제들(배민상회)',
+            '주식회사 현대이지웰'
+        ]
+        
         df_ecount_upload['거래처명_sort'] = pd.Categorical(df_ecount_upload['거래처명'], categories=sort_order, ordered=True)
-        df_ecount_upload = df_ecount_upload.sort_values(by=['거래처명_sort', 'original_order']).drop(columns=['거래처명_sort', 'original_order'])
+        
+        df_ecount_upload = df_ecount_upload.sort_values(
+            by=['거래처명_sort', '거래유형', 'original_order'],
+            ascending=[True, True, True]
+        ).drop(columns=['거래처명_sort', 'original_order'])
         
         df_ecount_upload = df_ecount_upload[ecount_columns[:-1]]
 
@@ -247,7 +304,7 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
                 if warnings:
                     st.warning("⚠️ 확인 필요 항목")
                     with st.expander("자세한 목록 보기..."):
-                        st.info("금액 보정 실패, 미등록 상품, 동명이인 의심 등의 데이터입니다. 원본 파일을 확인해주세요.")
+                        st.info("금액 보정 실패, 미등록 상품, 동명이인 의심, 고도몰 금액 불일치 등의 데이터입니다. 원본 파일을 확인해주세요.")
                         for warning_message in warnings:
                             st.markdown(warning_message)
                 
@@ -278,3 +335,4 @@ if st.button("🚀 모든 데이터 처리 및 파일 생성 실행"):
 
     else:
         st.warning("⚠️ 3개의 엑셀 파일을 모두 업로드해야 실행할 수 있습니다.")
+        
